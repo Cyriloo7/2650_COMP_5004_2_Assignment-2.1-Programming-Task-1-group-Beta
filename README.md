@@ -2,6 +2,7 @@
 
 ### Package skeleton & __init__.py
 
+```
 NumCompute/
 ├── numcompute/
 │   ├── __init__.py
@@ -16,7 +17,7 @@ NumCompute/
 │   ├── utils.py
 │   └── benchmarking.py
 ├── tests/
-├── demo/
-│   └── quickstart.ipynb
+├── demo/quickstart.ipynb
 ├── README.md
 └── pyproject.toml
+```
