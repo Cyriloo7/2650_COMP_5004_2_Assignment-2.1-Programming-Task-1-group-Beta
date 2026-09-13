@@ -3,7 +3,7 @@
 ### Package skeleton & __init__.py
 
 ```
-NumCompute/
+2650_COMP_5004_2_Assignment-2.1-Programming-Task-1-group-Beta/
 ├── numcompute/
 │   ├── __init__.py
 │   ├── io.py
