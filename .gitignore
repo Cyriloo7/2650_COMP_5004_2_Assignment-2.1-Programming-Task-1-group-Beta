@@ -1,7 +1,6 @@
 venv/
-numcompute.egg-info/
 numcompute/rank.py
 .pytest_cache/
 __pycache__/
-numcompute/__pycache__/
-tests/__pycache__/
+*.egg-info/
+*.py[cod]
