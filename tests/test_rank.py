@@ -113,7 +113,18 @@ def test_percentile_out_of_range_raises():
         assert False, "expected ValueError"
     except ValueError:
         pass
- 
+
+def test_percentile_invalid_interpolation_raises_clear_error():
+    # Covers rank.py lines 192-194: the try/except around np.nanpercentile
+    # that catches NumPy's own ValueError and re-raises it with a clearer,
+    # attributable message mentioning the bad interpolation value.
+    data = np.array([1, 2, 3, 4])
+    try:
+        percentile(data, 50, interpolation="Break_mode")
+        assert False, "expected ValueError for an invalid interpolation value"
+    except ValueError as e:
+        assert "Break_mode" in str(e)
+        assert "Invalid interpolation" in str(e)
  
 def test_percentile_lower_vs_higher_interpolation():
     data = np.array([1, 2, 3, 4])
