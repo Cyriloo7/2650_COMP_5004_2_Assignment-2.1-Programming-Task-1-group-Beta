@@ -140,6 +140,15 @@ def test_jacobian_rejects_non_1d_output():
     except ValueError:
         pass
 
+def test_jacobian_rejects_non_1d_input():
+    def F(x):
+        return x
+
+    try:
+        jacobian(F, np.array([[1.0, 2.0], [3.0, 4.0]]))
+        assert False, "expected ValueError for non-1D x input"
+    except ValueError as e:
+        assert "1D array for x" in str(e)
 
 def test_jacobian_invalid_method_raises():
     def F(x):
