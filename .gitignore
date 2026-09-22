@@ -4,3 +4,6 @@ numcompute/rank.py
 __pycache__/
 *.egg-info/
 *.py[cod]
+.coverage
+numcompute/__pycache__/
+tests/__pycache__/
