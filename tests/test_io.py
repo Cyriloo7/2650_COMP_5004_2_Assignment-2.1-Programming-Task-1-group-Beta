@@ -173,3 +173,68 @@ def test_invalid_arguments_raise(write_csv, kwargs, exc):
     with pytest.raises(exc):
         read_csv(write_csv("a\n1\n"), **kwargs)
 
+
+# ----------------------------------------------------------------------------
+# read_csv: categorical columns (dtype=str) and usecols
+# ----------------------------------------------------------------------------
+MIXED = "age,city,income\n25,Adelaide,50000\n,NA,61000\n40, Perth ,\n"
+
+
+def test_categorical_column_in_numeric_mode_raises_with_hint(write_csv):
+    with pytest.raises(ValueError, match=r"column 'city'.*dtype=str"):
+        read_csv(write_csv(MIXED))
+
+
+def test_dtype_str_returns_stripped_tokens_with_missing_as_empty(write_csv):
+    S, cols = read_csv(write_csv(MIXED), dtype=str)
+    assert cols == ["age", "city", "income"]
+    assert S.dtype.kind == "U"
+    np.testing.assert_array_equal(
+        S, [["25", "Adelaide", "50000"], ["", "", "61000"], ["40", "Perth", ""]]
+    )
+
+
+def test_mixed_file_split_with_usecols(write_csv):
+    path = write_csv(MIXED)
+    X, num_cols = read_csv(path, usecols=["income", "age"])  # caller's order kept
+    C, cat_cols = read_csv(path, usecols=["city"], dtype=str)
+    assert num_cols == ["income", "age"] and cat_cols == ["city"]
+    assert X.shape == (3, 2) and C.shape == (3, 1)
+    np.testing.assert_array_equal(X[:, 0][:2], [50000, 61000])
+    assert np.isnan(X[1, 1]) and np.isnan(X[2, 0])
+    np.testing.assert_array_equal(C.ravel(), ["Adelaide", "", "Perth"])
+
+
+def test_usecols_by_index_and_negative_index(write_csv):
+    path = write_csv("a,b,c\n1,2,3\n")
+    X, cols = read_csv(path, usecols=[-1, 0])
+    assert cols == ["c", "a"]
+    np.testing.assert_array_equal(X, [[3, 1]])
+
+
+def test_usecols_header_only_keeps_selected_width(write_csv):
+    X, cols = read_csv(write_csv("a,b,c\n"), usecols=["b"])
+    assert X.shape == (0, 1) and cols == ["b"]
+
+
+def test_float32_dtype(write_csv):
+    X, _ = read_csv(write_csv("a,b\n1,\n"), dtype=np.float32)
+    assert X.dtype == np.float32 and np.isnan(X[0, 1])
+
+
+@pytest.mark.parametrize(
+    "kwargs, exc",
+    [
+        ({"dtype": int}, TypeError),  # ints cannot hold NaN
+        ({"dtype": "not-a-dtype"}, TypeError),
+        ({"usecols": ["missing"]}, ValueError),
+        ({"usecols": [5]}, ValueError),
+        ({"usecols": [0, 0]}, ValueError),
+        ({"usecols": []}, ValueError),
+        ({"usecols": [1.5]}, TypeError),
+    ],
+)
+def test_invalid_dtype_and_usecols_raise(write_csv, kwargs, exc):
+    with pytest.raises(exc):
+        read_csv(write_csv("a,b\n1,2\n"), **kwargs)
+
