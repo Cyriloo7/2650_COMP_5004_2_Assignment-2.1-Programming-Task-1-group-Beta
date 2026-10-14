@@ -289,3 +289,52 @@ def quickselect(arr, k):
             hi = store - 1
         else:
             lo = store + 1
+
+def binary_search(sorted_array, x):
+    """Binary search in an ascending sorted 1D array.
+
+    Behaves like ``bisect.bisect_left`` / ``np.searchsorted(side='left')``:
+    the returned index is the FIRST position where `x` could be inserted
+    while keeping the array sorted.
+
+    Parameters
+    ----------
+    sorted_array : array_like, shape (n,)
+        1D array sorted in ascending order. This is assumed, not
+        checked (checking would cost O(n) and defeat the purpose).
+    x : scalar
+        Value to look for.
+
+    Returns
+    -------
+    index : int
+        Insertion index in ``[0, n]``. If `x` is present it is the
+        position of its first occurrence.
+    exists : bool
+        True if `x` is actually in the array.
+
+    Raises
+    ------
+    ValueError
+        If `sorted_array` is not 1D, or `x` is NaN.
+
+    Complexity
+    ----------
+    Time: O(log n). Space: O(1).
+    """
+    a = np.asarray(sorted_array)
+    if a.ndim != 1:
+        raise ValueError(f"binary_search() expects a 1D array, got {a.ndim}D")
+    if np.isnan(x):
+        raise ValueError("binary_search() cannot search for NaN")
+
+    lo, hi = 0, a.size
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if a[mid] < x:
+            lo = mid + 1
+        else:
+            hi = mid
+
+    exists = bool(lo < a.size and a[lo] == x)
+    return lo, exists

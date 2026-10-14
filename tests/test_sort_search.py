@@ -10,7 +10,7 @@ import bisect
 
 import numpy as np
 
-from numcompute.sort_search import stable_sort, multi_key_sort, topk ,quickselect
+from numcompute.sort_search import stable_sort, multi_key_sort, topk ,quickselect, binary_search
 
 
 def _raises(exc_type, func, *args, **kwargs):
@@ -231,6 +231,42 @@ def test_quickselect_invalid_inputs_raise():
     assert _raises(ValueError, quickselect, np.array([1.0, np.nan]), 0)  # NaN
     assert _raises(ValueError, quickselect, np.ones((2, 2)), 0)          # not 1D
 
+def test_binary_search_found():
+    index, exists = binary_search(np.array([1, 3, 5, 7]), 5)
+    assert (index, exists) == (2, True)
+
+
+def test_binary_search_value_not_present():
+    index, exists = binary_search(np.array([1, 3, 5, 7]), 4)
+    assert (index, exists) == (2, False)
+
+
+def test_binary_search_below_and_above_range():
+    arr = np.array([10, 20, 30])
+    assert binary_search(arr, 5) == (0, False)
+    assert binary_search(arr, 99) == (3, False)
+
+
+def test_binary_search_empty_array():
+    assert binary_search(np.array([]), 1) == (0, False)
+
+
+def test_binary_search_duplicates_returns_first_occurrence():
+    index, exists = binary_search(np.array([1, 2, 2, 2, 3]), 2)
+    assert (index, exists) == (1, True)
+
+
+def test_binary_search_matches_bisect_and_searchsorted():
+    arr = np.array([1, 2, 2, 4, 4, 4, 8, 9])
+    for x in range(0, 11):
+        index, _ = binary_search(arr, x)
+        assert index == bisect.bisect_left(arr.tolist(), x)
+        assert index == np.searchsorted(arr, x, side="left")
+
+
+def test_binary_search_nan_and_bad_shape_raise():
+    assert _raises(ValueError, binary_search, np.array([1.0, 2.0]), np.nan)
+    assert _raises(ValueError, binary_search, np.ones((2, 2)), 1)
 
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
