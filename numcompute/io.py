@@ -218,3 +218,200 @@ def _check_field_counts(
             f"row {first_row + i} has {counts[i]} fields, expected {n_cols} "
             f"(line {linenos[i]} of {source}{extra})"
         )
+
+
+class _Spec(NamedTuple):
+    """Validated parsing options shared by read_csv and read_csv_chunks."""
+
+    source: str
+    delimiter: str
+    missing: Tuple[str, ...]
+    filling_value: float
+    dtype: np.dtype
+    is_text: bool
+    n_fields: int = 0  # fields per row in the file
+    col_idx: np.ndarray = np.empty(0, dtype=np.intp)  # selected columns
+    out_names: Tuple[str, ...] = ()  # names of the selected columns
+
+
+def _make_spec(path, delimiter, missing_values, filling_value, dtype) -> _Spec:
+    """Validate the arguments common to both readers (fails fast, before I/O)."""
+    _validate_delimiter(delimiter)
+    missing = _normalise_missing(missing_values)
+    dt, is_text = _resolve_dtype(dtype)
+    filling = _resolve_filling(filling_value, is_text)
+    return _Spec(os.fspath(path), delimiter, missing, filling, dt, is_text)
+
+
+def _bind_columns(spec: _Spec, colnames: List[str], usecols) -> _Spec:
+    """Attach the file's width and the resolved ``usecols`` selection."""
+    idx = _resolve_usecols(usecols, colnames)
+    return spec._replace(
+        n_fields=len(colnames),
+        col_idx=idx,
+        out_names=tuple(colnames[i] for i in idx),
+    )
+
+
+def _parse_block(
+    lines: Sequence[str],
+    linenos: Sequence[int],
+    first_row: int,
+    spec: _Spec,
+) -> np.ndarray:
+    """Convert validated lines into an array of shape (len(lines), len(spec.col_idx)).
+
+    Numeric mode strategy: parse once with ``genfromtxt`` filling *every*
+    unparseable cell with NaN, then inspect only the NaN cells to tell the
+    three cases apart:
+
+    1. token is in ``missing_values``  -> replace with ``filling_value``
+    2. token is a NaN literal ('nan')  -> keep NaN (it is real data)
+    3. anything else ('abc', '1,2x')   -> raise ValueError
+
+    Text mode returns the stripped tokens with missing tokens mapped to ''.
+
+    Complexity: O(k·m) time and space for ``k`` lines of ``m`` fields, plus
+    O(r·m) to re-tokenise the ``r`` rows that contain at least one NaN.
+    """
+    n_out = len(spec.col_idx)
+    if len(lines) == 0:
+        empty_dtype = "<U1" if spec.is_text and spec.dtype.itemsize == 0 else spec.dtype
+        return np.empty((0, n_out), dtype=empty_dtype)
+
+    common = dict(
+        delimiter=spec.delimiter,
+        usecols=tuple(spec.col_idx.tolist()),
+        autostrip=True,
+        comments=None,  # '#' is ordinary data, not a comment marker
+        ndmin=2,
+    )
+
+    if spec.is_text:
+        S = np.genfromtxt(lines, dtype=str, **common)
+        S = np.where(np.isin(S, spec.missing), "", S)
+        return S if spec.dtype.itemsize == 0 else S.astype(spec.dtype)
+
+    X = np.genfromtxt(
+        lines, dtype=np.float64, missing_values=spec.missing, filling_values=np.nan, **common
+    )
+
+    nan_r, nan_c = np.nonzero(np.isnan(X))
+    if nan_r.size:
+        # Re-tokenise only the rows that contain NaN (usually a small subset).
+        rows, inverse = np.unique(nan_r, return_inverse=True)
+        tokens = np.char.strip(
+            np.array([lines[r].split(spec.delimiter) for r in rows], dtype=str)
+        )
+        cells = tokens[inverse, spec.col_idx[nan_c]]
+
+        is_missing = np.isin(cells, spec.missing)
+        is_nan_literal = np.isin(np.char.lower(cells), _NAN_LITERALS)
+        bad = np.flatnonzero(~(is_missing | is_nan_literal))
+        if bad.size:
+            b = int(bad[0])
+            r, c = int(nan_r[b]), int(nan_c[b])
+            extra = f"; {bad.size} non-numeric cells in this block" if bad.size > 1 else ""
+            raise ValueError(
+                f"row {first_row + r}, column {spec.out_names[c]!r}: cannot convert "
+                f"{str(cells[b])!r} to float (line {linenos[r]} of {spec.source}{extra}). "
+                "Add the token to missing_values if it means 'missing', or read "
+                "categorical columns with dtype=str (see usecols)."
+            )
+
+        if not np.isnan(spec.filling_value):
+            X[nan_r[is_missing], nan_c[is_missing]] = spec.filling_value
+
+    return X.astype(spec.dtype, copy=False)
+
+
+# ----------------------------------------------------------------------------
+# Public API
+# ----------------------------------------------------------------------------
+def read_csv(
+    path: PathLike,
+    delimiter: str = ",",
+    header: bool = True,
+    missing_values: Sequence[str] = DEFAULT_MISSING_VALUES,
+    filling_value: float = np.nan,
+    *,
+    dtype=float,
+    usecols: Optional[Sequence[Union[str, int]]] = None,
+) -> Tuple[np.ndarray, List[str]]:
+    """Read an entire delimited text file into a 2-D NumPy array.
+
+    Parameters
+    ----------
+    path : str or os.PathLike
+        Path to the CSV file (UTF-8; a leading byte-order mark is ignored).
+    delimiter : str, default ','
+        Field separator, e.g. ``','`` or ``'\\t'``.
+    header : bool, default True
+        If True the first line holds column names. If False, names
+        ``'col0', 'col1', ...`` are generated.
+    missing_values : str or sequence of str, default ('', 'NA', 'NaN')
+        Tokens (compared after whitespace stripping) treated as missing.
+    filling_value : float, default nan
+        Value written into missing cells (numeric mode only).
+    dtype : floating dtype or str, keyword-only, default float
+        ``float``/``np.float32``/... for numeric mode, ``str`` for text mode
+        (see the module docstring for the categorical-column contract).
+    usecols : sequence of str or int, keyword-only, optional
+        Columns to return, by name or index (negative indices allowed), in
+        the order given. Default: all columns.
+
+    Returns
+    -------
+    X : numpy.ndarray, shape (n_rows, n_selected_cols)
+        Parsed data with the requested ``dtype``. A header-only file gives
+        shape ``(0, n_selected_cols)``.
+    colnames : list of str, length n_selected_cols
+        Names of the returned columns, in the same order as ``X``'s columns.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``path`` does not exist.
+    TypeError
+        If ``delimiter``, ``missing_values``, ``dtype`` or ``usecols`` has
+        the wrong type (integer dtypes are rejected: they cannot hold NaN).
+    ValueError
+        If the file is empty, the header is blank or has duplicate names,
+        a row has the wrong number of fields (``"row 42 has 5 fields,
+        expected 3"``), a numeric-mode cell is neither a number nor a
+        missing token, ``usecols`` is invalid, or ``filling_value`` is not
+        a number.
+
+    Complexity
+    ----------
+    Time O(n·m) and memory O(n·m) for ``n`` rows and ``m`` columns: every
+    line is held in memory and parsed by a single vectorised
+    ``genfromtxt`` call. Use :func:`read_csv_chunks` for O(chunksize·m)
+    memory.
+
+    Examples
+    --------
+    >>> X, cols = read_csv("data.csv")                          # doctest: +SKIP
+    >>> X.shape, cols                                            # doctest: +SKIP
+    ((100, 3), ['age', 'height', 'weight'])
+    >>> C, _ = read_csv("people.csv", usecols=["city"], dtype=str)  # doctest: +SKIP
+    """
+    spec = _make_spec(path, delimiter, missing_values, filling_value, dtype)
+
+    with open(path, encoding=_ENCODING) as fh:
+        colnames: Optional[List[str]] = _read_header(fh, spec.source, delimiter) if header else None
+        numbered = list(_data_lines(fh, start_lineno=1 if header else 0))
+
+    linenos = [n for n, _ in numbered]
+    lines = [line for _, line in numbered]
+
+    if colnames is None:
+        if not lines:
+            raise ValueError(f"CSV file is empty: {spec.source}")
+        colnames = [f"col{j}" for j in range(lines[0].count(delimiter) + 1)]
+
+    spec = _bind_columns(spec, colnames, usecols)
+    _check_field_counts(lines, linenos, delimiter, spec.n_fields, first_row=1, source=spec.source)
+    X = _parse_block(lines, linenos, first_row=1, spec=spec)
+    return X, list(spec.out_names)
+
