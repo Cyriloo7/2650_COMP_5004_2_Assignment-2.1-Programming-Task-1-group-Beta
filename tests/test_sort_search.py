@@ -10,7 +10,7 @@ import bisect
 
 import numpy as np
 
-from numcompute.sort_search import stable_sort, multi_key_sort
+from numcompute.sort_search import stable_sort, multi_key_sort, topk
 
 
 def _raises(exc_type, func, *args, **kwargs):
@@ -107,6 +107,87 @@ def test_multi_key_sort_empty_rows():
     data = np.empty((0, 3))
     result = multi_key_sort(data, keys=[0])
     assert result.shape == (0, 3)
+
+def test_topk_largest_with_indices():
+    values = np.array([5, 1, 9, 3, 7])
+    top_values, top_idx = topk(values, 3)
+    np.testing.assert_array_equal(top_values, np.array([9, 7, 5]))
+    np.testing.assert_array_equal(top_idx, np.array([2, 4, 0]))
+
+
+def test_topk_smallest():
+    values = np.array([5, 1, 9, 3, 7])
+    top_values, top_idx = topk(values, 2, largest=False)
+    np.testing.assert_array_equal(top_values, np.array([1, 3]))
+    np.testing.assert_array_equal(top_idx, np.array([1, 3]))
+
+
+def test_topk_return_indices_false():
+    result = topk(np.array([4, 8, 6]), 2, return_indices=False)
+    np.testing.assert_array_equal(result, np.array([8, 6]))
+
+
+def test_topk_k_zero_or_negative_raises():
+    assert _raises(ValueError, topk, np.array([1, 2, 3]), 0)
+    assert _raises(ValueError, topk, np.array([1, 2, 3]), -2)
+
+
+def test_topk_k_equals_length():
+    values = np.array([2, 3, 1])
+    top_values, _ = topk(values, 3)
+    np.testing.assert_array_equal(top_values, np.array([3, 2, 1]))
+
+
+def test_topk_k_too_large_is_clamped():
+    values = np.array([2, 3, 1])
+    top_values, top_idx = topk(values, 100)
+    np.testing.assert_array_equal(top_values, np.array([3, 2, 1]))
+    assert top_idx.size == 3
+
+
+def test_topk_empty_array():
+    top_values, top_idx = topk(np.array([]), 3)
+    assert top_values.size == 0 and top_idx.size == 0
+
+
+def test_topk_all_equal_values():
+    values = np.array([4.0, 4.0, 4.0, 4.0])
+    top_values, top_idx = topk(values, 2)
+    np.testing.assert_array_equal(top_values, np.array([4.0, 4.0]))
+    assert len(set(top_idx.tolist())) == 2  # two distinct positions
+
+
+def test_topk_ignores_nan():
+    values = np.array([1.0, np.nan, 5.0, np.nan, 3.0])
+    top_values, top_idx = topk(values, 2)
+    np.testing.assert_array_equal(top_values, np.array([5.0, 3.0]))
+    np.testing.assert_array_equal(top_idx, np.array([2, 4]))  # original positions
+
+
+def test_topk_all_nan_returns_empty():
+    top_values, top_idx = topk(np.array([np.nan, np.nan]), 2)
+    assert top_values.size == 0 and top_idx.size == 0
+
+
+def test_topk_non_contiguous_view():
+    base = np.array([1, 99, 8, 99, 5, 99, 6])
+    view = base[::2]  # [1, 8, 5, 6]
+    top_values, top_idx = topk(view, 2)
+    np.testing.assert_array_equal(top_values, np.array([8, 6]))
+    np.testing.assert_array_equal(top_idx, np.array([1, 3]))
+
+
+def test_topk_matches_full_sort_on_random_data():
+    rng = np.random.default_rng(0)
+    values = rng.normal(size=200)
+    top_values, _ = topk(values, 10)
+    expected = np.sort(values)[::-1][:10]
+    np.testing.assert_allclose(top_values, expected)
+
+
+def test_topk_rejects_2d():
+    assert _raises(ValueError, topk, np.ones((2, 2)), 1)
+
 
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]

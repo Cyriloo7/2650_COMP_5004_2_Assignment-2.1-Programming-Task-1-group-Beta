@@ -137,3 +137,80 @@ def multi_key_sort(data, keys, ascending=None):
 
     order = np.lexsort(tuple(sort_columns))
     return data[order]
+
+def topk(values, k, largest=True, return_indices=True):
+    """Return the k largest (or smallest) values of a 1D array, in order.
+
+    Strategy: ``np.argpartition`` finds the k best elements in O(n)
+    without sorting everything, then ``np.argsort`` orders just those
+    k elements.
+
+    Parameters
+    ----------
+    values : array_like, shape (n,)
+        1D input. NaNs are ignored (see Notes).
+    k : int
+        How many elements to return. Must be >= 1.
+    largest : bool, default True
+        ``True`` -> k largest, sorted from largest to smallest.
+        ``False`` -> k smallest, sorted from smallest to largest.
+    return_indices : bool, default True
+        If True, also return the positions of the chosen elements in the
+        ORIGINAL array.
+
+    Returns
+    -------
+    top_values : ndarray, shape (min(k, m),)
+        The selected values, best first (m = number of non-NaN values).
+    top_indices : ndarray of int, shape (min(k, m),)
+        Only returned when ``return_indices=True``. Indices into `values`.
+
+    Raises
+    ------
+    ValueError
+        If `k <= 0` or `values` is not 1D.
+
+    Notes
+    -----
+    - k larger than the number of usable values is CLAMPED (not an
+      error): you simply get everything, sorted.
+    - NaN policy: NaNs are ignored and never returned. If all values are
+      NaN (or the array is empty) the result is empty.
+    - Among equal values the order is not guaranteed to follow the
+      original positions when ``largest=True``.
+
+    Complexity
+    ----------
+    Time: O(n + k log k) expected. Space: O(n).
+    """
+    values = np.asarray(values)
+    if values.ndim != 1:
+        raise ValueError(f"topk() expects a 1D array, got {values.ndim}D")
+    if k <= 0:
+        raise ValueError(f"k must be a positive integer, got {k}")
+
+    # NaN policy: drop NaNs but remember where the real values were.
+    valid_positions = np.flatnonzero(~np.isnan(values))
+    valid = values[valid_positions]
+    n = valid.size
+    k_eff = min(int(k), n)  # clamp
+
+    if k_eff == 0:
+        empty_values = values[:0]
+        empty_idx = np.empty(0, dtype=np.intp)
+        return (empty_values, empty_idx) if return_indices else empty_values
+
+    if largest:
+        # The k largest sit in the last k slots once position n-k is partitioned.
+        part = np.argpartition(valid, n - k_eff)[n - k_eff:]
+    else:
+        part = np.argpartition(valid, k_eff - 1)[:k_eff]
+
+    # Order only the k chosen elements (cheap: k log k, not n log n).
+    ordered = part[np.argsort(valid[part], kind="stable")]
+    if largest:
+        ordered = ordered[::-1]
+
+    top_indices = valid_positions[ordered]
+    top_values = values[top_indices]
+    return (top_values, top_indices) if return_indices else top_values
