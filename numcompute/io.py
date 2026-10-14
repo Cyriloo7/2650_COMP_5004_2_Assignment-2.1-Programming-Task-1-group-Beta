@@ -415,3 +415,114 @@ def read_csv(
     X = _parse_block(lines, linenos, first_row=1, spec=spec)
     return X, list(spec.out_names)
 
+def read_csv_chunks(
+    path: PathLike,
+    chunksize: int,
+    delimiter: str = ",",
+    header: bool = True,
+    missing_values: Sequence[str] = DEFAULT_MISSING_VALUES,
+    filling_value: float = np.nan,
+    *,
+    dtype=float,
+    usecols: Optional[Sequence[Union[str, int]]] = None,
+) -> Iterator[Tuple[np.ndarray, List[str]]]:
+    """Stream a delimited text file as successive 2-D NumPy arrays.
+
+    The file is read line by line; at most ``chunksize`` data lines are
+    buffered before being parsed with the same vectorised path as
+    :func:`read_csv`, so concatenating all chunks gives exactly
+    ``read_csv(path, ...)[0]``.
+
+    Arguments are validated eagerly (errors raise at call time); the file
+    itself is opened lazily on the first ``next()`` and closed when the
+    generator is exhausted, closed, or garbage-collected.
+
+    Parameters
+    ----------
+    path : str or os.PathLike
+        Path to the CSV file (UTF-8; a leading byte-order mark is ignored).
+    chunksize : int
+        Maximum number of data rows per chunk (>= 1). Every chunk has
+        exactly ``chunksize`` rows except possibly the last.
+    delimiter, header, missing_values, filling_value, dtype, usecols
+        Same meaning as in :func:`read_csv`.
+
+    Yields
+    ------
+    X_chunk : numpy.ndarray, shape (k, n_selected_cols), 1 <= k <= chunksize
+        Parsed rows of the chunk with the requested ``dtype``.
+    colnames : list of str, length n_selected_cols
+        Column names (a fresh list each time, same contents every chunk).
+
+    Raises
+    ------
+    TypeError
+        At call time, if ``chunksize`` is not an int, or for the argument
+        type errors listed in :func:`read_csv`.
+    ValueError
+        At call time, if ``chunksize < 1`` or an argument value is invalid.
+        During iteration, for an empty file, a malformed row or a
+        non-numeric cell; row numbers in messages count from the start of
+        the file, not the chunk, and earlier chunks have already been
+        yielded.
+    FileNotFoundError
+        At call time, if ``path`` does not exist.
+
+    Complexity
+    ----------
+    Time O(n·m) in total for ``n`` rows and ``m`` columns; memory
+    O(chunksize·m) regardless of file size. A header-only file yields no
+    chunks.
+
+    Examples
+    --------
+    >>> total = 0.0                                              # doctest: +SKIP
+    >>> for X, cols in read_csv_chunks("big.csv", chunksize=10_000):
+    ...     total += np.nansum(X[:, 0])
+    """
+    if isinstance(chunksize, bool) or not isinstance(chunksize, (int, np.integer)):
+        raise TypeError(f"chunksize must be an int, got {type(chunksize).__name__}")
+    if chunksize < 1:
+        raise ValueError(f"chunksize must be >= 1, got {chunksize}")
+    spec = _make_spec(path, delimiter, missing_values, filling_value, dtype)
+    if not os.path.isfile(spec.source):
+        raise FileNotFoundError(f"No such file: {spec.source!r}")
+    return _iter_chunks(int(chunksize), header, usecols, spec)
+
+
+def _iter_chunks(
+    chunksize: int, header: bool, usecols, spec: _Spec
+) -> Iterator[Tuple[np.ndarray, List[str]]]:
+    """Generator behind :func:`read_csv_chunks` (arguments already validated)."""
+    with open(spec.source, encoding=_ENCODING) as fh:
+        names: Optional[List[str]] = None
+        if header:
+            spec = _bind_columns(spec, _read_header(fh, spec.source, spec.delimiter), usecols)
+            names = list(spec.out_names)
+
+        lines: List[str] = []
+        linenos: List[int] = []
+        first_row = 1  # data-row number of lines[0], counted from file start
+
+        for lineno, line in _data_lines(fh, start_lineno=1 if header else 0):
+            if names is None:  # header=False: width comes from the first data row
+                width = line.count(spec.delimiter) + 1
+                spec = _bind_columns(spec, [f"col{j}" for j in range(width)], usecols)
+                names = list(spec.out_names)
+            lines.append(line)
+            linenos.append(lineno)
+            if len(lines) == chunksize:
+                yield _parse_chunk(lines, linenos, first_row, spec), list(names)
+                first_row += len(lines)
+                lines, linenos = [], []
+
+        if lines:
+            yield _parse_chunk(lines, linenos, first_row, spec), list(names)
+        elif names is None:
+            raise ValueError(f"CSV file is empty: {spec.source}")
+
+
+def _parse_chunk(lines: List[str], linenos: List[int], first_row: int, spec: _Spec) -> np.ndarray:
+    """Validate field counts for one chunk, then parse it."""
+    _check_field_counts(lines, linenos, spec.delimiter, spec.n_fields, first_row, spec.source)
+    return _parse_block(lines, linenos, first_row, spec)

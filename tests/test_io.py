@@ -1,8 +1,7 @@
 import numpy as np
 import pytest
 
-from numcompute.io import read_csv
-
+from numcompute.io import read_csv, read_csv_chunks
 
 @pytest.fixture
 def write_csv(tmp_path):
@@ -238,3 +237,83 @@ def test_invalid_dtype_and_usecols_raise(write_csv, kwargs, exc):
     with pytest.raises(exc):
         read_csv(write_csv("a,b\n1,2\n"), **kwargs)
 
+
+
+
+# ----------------------------------------------------------------------------
+# read_csv_chunks: streaming reader
+# ----------------------------------------------------------------------------
+SAMPLE = "a,b,c\n1,,3\n4,5,NA\n7,8,9\n,11,12\n13,14,15\n"
+
+
+@pytest.mark.parametrize("chunksize", [1, 2, 3, 5, 100])
+def test_chunks_concatenate_to_full_read(write_csv, chunksize):
+    path = write_csv(SAMPLE)
+    full, cols = read_csv(path)
+    chunks = list(read_csv_chunks(path, chunksize))
+    assert all(names == cols for _, names in chunks)
+    np.testing.assert_array_equal(np.vstack([X for X, _ in chunks]), full)  # NaN == NaN here
+
+
+def test_chunk_sizes_last_chunk_smaller(write_csv):
+    sizes = [X.shape for X, _ in read_csv_chunks(write_csv(SAMPLE), 2)]
+    assert sizes == [(2, 3), (2, 3), (1, 3)]
+
+
+def test_chunks_returns_a_generator(write_csv):
+    import inspect
+
+    gen = read_csv_chunks(write_csv(SAMPLE), 2)
+    assert inspect.isgenerator(gen)
+    gen.close()
+
+
+def test_chunks_stream_without_reading_ahead(write_csv):
+    # The malformed row is far beyond the first chunk: the first chunk must
+    # still be yielded, proving the file is not parsed eagerly.
+    rows = "".join(f"{i},{i}\n" for i in range(1, 1000)) + "1,2,3\n"
+    gen = read_csv_chunks(write_csv("x,y\n" + rows), chunksize=10)
+    X, _ = next(gen)
+    np.testing.assert_array_equal(X[:, 0], np.arange(1, 11))
+    with pytest.raises(ValueError, match=r"row 1000 has 3 fields, expected 2 \(line 1001"):
+        for _ in gen:
+            pass
+
+
+def test_chunks_report_global_row_for_non_numeric_cell(write_csv):
+    gen = read_csv_chunks(write_csv("a\n1\n2\n3\nx\n"), chunksize=2)
+    next(gen)
+    with pytest.raises(ValueError, match=r"row 4, column 'a': cannot convert 'x'"):
+        next(gen)
+
+
+@pytest.mark.parametrize("header", [True, False])
+def test_chunks_empty_file_raises_on_first_next(write_csv, header):
+    gen = read_csv_chunks(write_csv(""), 3, header=header)  # no error at call time
+    with pytest.raises(ValueError, match="CSV file is empty"):
+        next(gen)
+
+
+def test_chunks_header_only_yields_nothing(write_csv):
+    assert list(read_csv_chunks(write_csv("a,b\n"), 4)) == []
+
+
+def test_chunks_header_false_dtype_str_and_usecols(write_csv):
+    path = write_csv("1,red\n2,\n3,blue\n")
+    chunks = list(read_csv_chunks(path, 2, header=False, usecols=[1], dtype=str))
+    assert [names for _, names in chunks] == [["col1"], ["col1"]]
+    np.testing.assert_array_equal(np.vstack([C for C, _ in chunks]).ravel(), ["red", "", "blue"])
+
+
+@pytest.mark.parametrize(
+    "chunksize, exc",
+    [(0, ValueError), (-5, ValueError), (2.5, TypeError), (True, TypeError), ("3", TypeError)],
+)
+def test_invalid_chunksize_raises_eagerly(write_csv, chunksize, exc):
+    with pytest.raises(exc):
+        read_csv_chunks(write_csv(SAMPLE), chunksize)  # no next() needed
+
+
+def test_chunks_missing_file_raises_eagerly(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        read_csv_chunks(tmp_path / "nope.csv", 10)
