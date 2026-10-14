@@ -10,7 +10,7 @@ import bisect
 
 import numpy as np
 
-from numcompute.sort_search import stable_sort, multi_key_sort, topk
+from numcompute.sort_search import stable_sort, multi_key_sort, topk ,quickselect
 
 
 def _raises(exc_type, func, *args, **kwargs):
@@ -187,6 +187,49 @@ def test_topk_matches_full_sort_on_random_data():
 
 def test_topk_rejects_2d():
     assert _raises(ValueError, topk, np.ones((2, 2)), 1)
+
+
+def test_quickselect_matches_sorted_for_every_k():
+    values = np.array([7, 2, 9, 4, 4, 1, 8])
+    expected = np.sort(values)
+    for k in range(values.size):
+        assert quickselect(values, k) == expected[k]
+
+
+def test_quickselect_does_not_modify_input():
+    values = np.array([3, 1, 2])
+    quickselect(values, 1)
+    np.testing.assert_array_equal(values, np.array([3, 1, 2]))
+
+
+def test_quickselect_single_element():
+    assert quickselect(np.array([42]), 0) == 42
+
+
+def test_quickselect_all_equal():
+    assert quickselect(np.array([5, 5, 5, 5, 5]), 3) == 5
+
+
+def test_quickselect_already_sorted_and_reversed():
+    ascending = np.arange(50)
+    assert quickselect(ascending, 25) == 25
+    assert quickselect(ascending[::-1], 25) == 25  # also a non-contiguous view
+
+
+def test_quickselect_random_agrees_with_numpy():
+    rng = np.random.default_rng(1)
+    values = rng.integers(0, 20, size=300)  # lots of duplicates
+    expected = np.sort(values)
+    for k in (0, 17, 150, 299):
+        assert quickselect(values, k) == expected[k]
+
+
+def test_quickselect_invalid_inputs_raise():
+    assert _raises(ValueError, quickselect, np.array([]), 0)             # empty
+    assert _raises(ValueError, quickselect, np.array([1, 2, 3]), 3)      # k too big
+    assert _raises(ValueError, quickselect, np.array([1, 2, 3]), -1)     # k negative
+    assert _raises(ValueError, quickselect, np.array([1.0, np.nan]), 0)  # NaN
+    assert _raises(ValueError, quickselect, np.ones((2, 2)), 0)          # not 1D
 
 
 if __name__ == "__main__":

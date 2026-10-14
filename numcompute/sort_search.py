@@ -214,3 +214,78 @@ def topk(values, k, largest=True, return_indices=True):
     top_indices = valid_positions[ordered]
     top_values = values[top_indices]
     return (top_values, top_indices) if return_indices else top_values
+
+def quickselect(arr, k):
+    """Return the k-th smallest element of `arr` (0-based) without fully sorting.
+
+    Hand-written, iterative Lomuto-partition quickselect (the
+    "educational" version). The loop is intentional: each pass
+    partitions the array around a pivot and then keeps only the side
+    that contains position k.
+
+    Parameters
+    ----------
+    arr : array_like, shape (n,)
+        1D numeric input. It is NOT modified (a copy is partitioned).
+    k : int
+        0-based rank to find: ``k=0`` is the minimum,
+        ``k=n-1`` is the maximum, ``k=n//2`` is roughly the median.
+
+    Returns
+    -------
+    value : scalar
+        The element that would be at index k if `arr` were sorted.
+
+    Raises
+    ------
+    ValueError
+        If `arr` is not 1D, is empty, contains NaN, or `k` is outside
+        ``[0, n-1]``.
+
+    Notes
+    -----
+    The middle element is used as the pivot (moved to the end first),
+    which avoids the classic worst case on already-sorted input. Lomuto
+    partitioning still degrades on arrays where almost all values are
+    equal; that is the O(n^2) case below.
+
+    Complexity
+    ----------
+    Time: O(n) expected, O(n^2) worst case. Space: O(n) for the copy
+    (the partitioning itself is in place and iterative, no recursion).
+    """
+    a = np.array(arr, copy=True)
+    if a.ndim != 1:
+        raise ValueError(f"quickselect() expects a 1D array, got {a.ndim}D")
+    n = a.size
+    if n == 0:
+        raise ValueError("quickselect() cannot select from an empty array")
+    if np.any(np.isnan(a)):
+        raise ValueError("quickselect() does not support NaN values")
+    if not 0 <= k < n:
+        raise ValueError(f"k={k} is out of range for an array of length {n}")
+
+    lo, hi = 0, n - 1
+    while True:
+        if lo == hi:
+            return a[lo]
+
+        # Move the middle element to the end to use it as the pivot.
+        mid = (lo + hi) // 2
+        a[mid], a[hi] = a[hi], a[mid]
+        pivot = a[hi]
+
+        # Lomuto partition: everything < pivot gets packed to the left.
+        store = lo
+        for j in range(lo, hi):
+            if a[j] < pivot:
+                a[store], a[j] = a[j], a[store]
+                store += 1
+        a[store], a[hi] = a[hi], a[store]  # pivot lands in its final spot
+
+        if k == store:
+            return a[store]
+        elif k < store:
+            hi = store - 1
+        else:
+            lo = store + 1
