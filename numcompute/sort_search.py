@@ -59,3 +59,81 @@ def stable_sort(arr, axis=-1):
     Time: O(n log n). Space: O(n) for the copy.
     """
     return np.sort(np.asarray(arr), axis=axis, kind="stable")
+
+def multi_key_sort(data, keys, ascending=None):
+    """Sort the rows of a 2D array by several columns at once.
+
+    Uses ``np.lexsort`` under the hood. IMPORTANT: following lexsort's
+    convention, the LAST key in `keys` is the PRIMARY key (sorted by
+    first), and the first key is the last tie-breaker.
+
+    Example: ``keys=[0, 1]`` sorts by column 1 first; rows with equal
+    column-1 values are then ordered by column 0.
+
+    Parameters
+    ----------
+    data : array_like, shape (n_rows, n_cols)
+        2D array; each row is one record.
+    keys : sequence of int
+        Column indices to sort by. The last one is the primary key.
+    ascending : sequence of bool, optional
+        One flag per key (same order as `keys`). ``True`` = ascending.
+        Defaults to all ascending.
+
+    Returns
+    -------
+    sorted_data : ndarray, shape (n_rows, n_cols)
+        A sorted copy of `data` (rows reordered, values unchanged).
+
+    Raises
+    ------
+    ValueError
+        If `data` is not 2D, `keys` is empty, a key is out of range, or
+        `ascending` has a different length from `keys`.
+
+    Notes
+    -----
+    The sort is stable, so rows that tie on every key keep their
+    original order. Descending order is done by negating the dense rank
+    of a column (not the raw values), so it works for any dtype and
+    never overflows. NaNs are placed at the end of ascending keys.
+
+    Complexity
+    ----------
+    Time: O(k * n log n) for k keys and n rows. Space: O(k * n).
+    """
+    data = np.asarray(data)
+    if data.ndim != 2:
+        raise ValueError(f"multi_key_sort() expects a 2D array, got {data.ndim}D")
+
+    keys = list(keys)
+    if len(keys) == 0:
+        raise ValueError("keys must contain at least one column index")
+
+    n_cols = data.shape[1]
+    for key in keys:
+        if not -n_cols <= key < n_cols:
+            raise ValueError(
+                f"key {key} is out of range for data with {n_cols} columns"
+            )
+
+    if ascending is None:
+        ascending = [True] * len(keys)
+    else:
+        ascending = list(ascending)
+        if len(ascending) != len(keys):
+            raise ValueError(
+                f"ascending has length {len(ascending)} but keys has length {len(keys)}"
+            )
+
+    sort_columns = []
+    for key, asc in zip(keys, ascending):
+        column = data[:, key]
+        if not asc:
+            # Dense rank (0..u-1), negated: reverses the order, keeps ties tied.
+            _, ranks = np.unique(column, return_inverse=True)
+            column = -ranks.reshape(-1)
+        sort_columns.append(column)
+
+    order = np.lexsort(tuple(sort_columns))
+    return data[order]

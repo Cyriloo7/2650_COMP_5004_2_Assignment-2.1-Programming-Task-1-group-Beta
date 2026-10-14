@@ -10,7 +10,7 @@ import bisect
 
 import numpy as np
 
-from numcompute.sort_search import stable_sort
+from numcompute.sort_search import stable_sort, multi_key_sort
 
 
 def _raises(exc_type, func, *args, **kwargs):
@@ -56,6 +56,57 @@ def test_stable_sort_non_contiguous_view():
     # original must be untouched
     np.testing.assert_array_equal(base, np.array([9, 0, 7, 0, 5, 0, 3]))
 
+
+# ---------- multi_key_sort ----------
+
+def test_multi_key_sort_last_key_is_primary():
+    data = np.array([
+        [1, 2],
+        [0, 2],
+        [5, 1],
+    ])
+    # keys=[0, 1] -> column 1 is PRIMARY, column 0 breaks ties.
+    result = multi_key_sort(data, keys=[0, 1])
+    expected = np.array([[5, 1], [0, 2], [1, 2]])
+    np.testing.assert_array_equal(result, expected)
+
+
+def test_multi_key_sort_descending():
+    data = np.array([[1, 10], [2, 30], [3, 20]])
+    result = multi_key_sort(data, keys=[1], ascending=[False])
+    np.testing.assert_array_equal(result[:, 1], np.array([30, 20, 10]))
+
+
+def test_multi_key_sort_mixed_directions():
+    data = np.array([
+        [1, 5],
+        [2, 5],
+        [3, 7],
+    ])
+    # primary = column 1 descending, tie-break = column 0 ascending
+    result = multi_key_sort(data, keys=[0, 1], ascending=[True, False])
+    expected = np.array([[3, 7], [1, 5], [2, 5]])
+    np.testing.assert_array_equal(result, expected)
+
+
+def test_multi_key_sort_is_stable_on_full_ties():
+    data = np.array([[1, 0], [1, 1], [1, 2]])
+    result = multi_key_sort(data, keys=[0])
+    np.testing.assert_array_equal(result, data)  # original order kept
+
+
+def test_multi_key_sort_invalid_inputs_raise():
+    data = np.array([[1, 2], [3, 4]])
+    assert _raises(ValueError, multi_key_sort, np.array([1, 2, 3]), [0])  # not 2D
+    assert _raises(ValueError, multi_key_sort, data, [])                  # no keys
+    assert _raises(ValueError, multi_key_sort, data, [5])                 # bad column
+    assert _raises(ValueError, multi_key_sort, data, [0, 1], [True])      # wrong length
+
+
+def test_multi_key_sort_empty_rows():
+    data = np.empty((0, 3))
+    result = multi_key_sort(data, keys=[0])
+    assert result.shape == (0, 3)
 
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
