@@ -306,3 +306,292 @@ class StandardScaler(TransformerMixin):
         _check_n_features(self, X, reset=False)
         return (X - self.mean_) / _safe_divisor(self.scale_)
 
+
+# ----------------------------------------------------------------------------
+# MinMaxScaler
+# ----------------------------------------------------------------------------
+class MinMaxScaler(TransformerMixin):
+    """Scale each feature linearly into ``feature_range``.
+
+    ``transform`` computes
+    ``lo + (X - min_) / range_safe * (hi - lo)`` with
+    ``range_safe = np.where(max_ - min_ == 0, 1.0, max_ - min_)``.
+
+    Parameters
+    ----------
+    feature_range : tuple (lo, hi), default (0, 1)
+        Target range; requires finite ``lo < hi``.
+    clip : bool, default False
+        If True, clip transformed values to ``feature_range``. Otherwise
+        values outside the training range map outside ``feature_range``.
+
+    Attributes
+    ----------
+    min_ : ndarray of shape (n_features,)
+        Per-column minimum of the non-NaN training values.
+    max_ : ndarray of shape (n_features,)
+        Per-column maximum of the non-NaN training values.
+    data_range_ : ndarray of shape (n_features,)
+        ``max_ - min_`` (may be ``inf`` if the span exceeds float range;
+        the transform itself stays finite, see Notes).
+    n_features_in_ : int
+        Number of columns seen in ``fit``.
+
+    Notes
+    -----
+    * **Zero range:** a constant column maps to ``lo``.
+    * **NaN:** ignored in ``fit`` and propagated by ``transform``; an
+      all-NaN column has NaN ``min_``/``max_`` and transforms to NaN.
+    * **Stability:** the scaling is computed on halves,
+      ``(X/2 - min_/2) / (max_/2 - min_/2)``, which cannot overflow even
+      when ``max_ - min_`` exceeds the float64 range.
+    """
+
+    def __init__(self, feature_range: tuple[float, float] = (0, 1), clip: bool = False):
+        self.feature_range = feature_range
+        self.clip = clip
+
+    def _range(self) -> tuple[float, float]:
+        try:
+            lo, hi = (float(v) for v in self.feature_range)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"feature_range must be a pair of numbers (lo, hi), got {self.feature_range!r}"
+            ) from None
+        if not (np.isfinite(lo) and np.isfinite(hi) and lo < hi):
+            raise ValueError(f"feature_range must satisfy finite lo < hi, got {self.feature_range!r}")
+        return lo, hi
+
+    def fit(self, X, y=None) -> "MinMaxScaler":
+        """Compute per-column minimum and maximum.
+
+        Parameters
+        ----------
+        X : array-like of numbers, shape (n_samples, n_features)
+            Training data; NaN marks missing values.
+        y : ignored
+
+        Returns
+        -------
+        self : MinMaxScaler
+
+        Raises
+        ------
+        TypeError
+            If ``X`` is not numeric.
+        ValueError
+            If ``feature_range`` is invalid, or ``X`` is not 2-D, is empty,
+            or contains ``±inf``.
+
+        Complexity
+        ----------
+        O(n·m) time, O(m) stored state.
+        """
+        self._range()  # fail fast on a bad feature_range
+        X = _check_numeric(X, "MinMaxScaler")
+        _check_n_features(self, X, reset=True)
+        self.min_ = _nan_stat(np.nanmin, X)
+        self.max_ = _nan_stat(np.nanmax, X)
+        with np.errstate(over="ignore"):
+            self.data_range_ = self.max_ - self.min_
+        return self
+
+    def transform(self, X) -> np.ndarray:
+        """Scale ``X`` into ``feature_range`` using the fitted min and max.
+
+        Parameters
+        ----------
+        X : array-like of numbers, shape (n_samples, n_features_in_)
+
+        Returns
+        -------
+        X_out : ndarray of float64, shape (n_samples, n_features_in_)
+
+        Raises
+        ------
+        NotFittedError
+            If called before ``fit``.
+        TypeError
+            If ``X`` is not numeric.
+        ValueError
+            If ``X`` is not 2-D, contains ``±inf``, or its column count
+            differs from ``n_features_in_``.
+
+        Complexity
+        ----------
+        O(n·m) time and memory.
+        """
+        _check_fitted(self, "min_")
+        lo, hi = self._range()
+        X = _check_numeric(X, "MinMaxScaler")
+        _check_n_features(self, X, reset=False)
+
+        half_range = _safe_divisor(self.max_ / 2 - self.min_ / 2)
+        X_out = (X / 2 - self.min_ / 2) / half_range * (hi - lo) + lo
+        if self.clip:
+            X_out = np.clip(X_out, lo, hi)  # NaN passes through np.clip
+        return X_out
+
+
+# ----------------------------------------------------------------------------
+# SimpleImputer
+# ----------------------------------------------------------------------------
+_IMPUTE_STRATEGIES = ("mean", "median", "most_frequent", "constant")
+
+
+def _nan_mode(X: np.ndarray) -> np.ndarray:
+    """Column-wise most frequent non-NaN value, fully vectorised.
+
+    Ties resolve to the smallest value. All-NaN columns return NaN.
+
+    Method: sort each column (NaNs go last), compute for every position the
+    length of the run of equal values ending there, then ``argmax`` over the
+    run lengths. Because columns are sorted ascending and ``argmax`` returns
+    the first maximum, ties pick the smallest value.
+
+    Complexity: O(n log n · m) time, O(n·m) memory.
+    """
+    n, m = X.shape
+    S = np.sort(X, axis=0)
+    rows = np.arange(n)[:, None]
+    new_run = np.ones_like(S, dtype=bool)
+    new_run[1:] = S[1:] != S[:-1]
+    run_start = np.maximum.accumulate(np.where(new_run, rows, 0), axis=0)
+    run_len = np.where(np.isnan(S), -1, rows - run_start + 1)
+    return S[np.argmax(run_len, axis=0), np.arange(m)]
+
+
+class SimpleImputer(TransformerMixin):
+    """Replace NaN with a per-column statistic.
+
+    ``transform`` computes ``np.where(np.isnan(X), statistics_, X)``.
+
+    Parameters
+    ----------
+    strategy : {'mean', 'median', 'most_frequent', 'constant'}, default 'mean'
+        * ``'mean'`` / ``'median'``: ``np.nanmean`` / ``np.nanmedian``.
+        * ``'most_frequent'``: column mode; ties go to the smallest value.
+        * ``'constant'``: always ``fill_value``.
+    fill_value : float, default 0
+        Value used by ``'constant'``, and the fallback for columns that are
+        entirely NaN during ``fit`` (see Notes).
+
+    Attributes
+    ----------
+    statistics_ : ndarray of float64, shape (n_features,)
+        Fill value for each column.
+    n_features_in_ : int
+        Number of columns seen in ``fit``.
+
+    Notes
+    -----
+    * **All-NaN column:** mean, median and mode are undefined, so the
+      column's statistic falls back to ``fill_value`` and a ``UserWarning``
+      names the affected columns. The column is kept (not dropped) so the
+      output shape always equals the input shape.
+    * **Numeric only:** NaN is the missing marker. Categorical columns read
+      with ``read_csv(dtype=str)`` mark missing as ``''``, which
+      :class:`OneHotEncoder` treats as its own category.
+    """
+
+    def __init__(self, strategy: str = "mean", fill_value: float = 0):
+        self.strategy = strategy
+        self.fill_value = fill_value
+
+    def fit(self, X, y=None) -> "SimpleImputer":
+        """Learn the fill value of every column.
+
+        Parameters
+        ----------
+        X : array-like of numbers, shape (n_samples, n_features)
+            Training data; NaN marks missing values.
+        y : ignored
+
+        Returns
+        -------
+        self : SimpleImputer
+
+        Raises
+        ------
+        TypeError
+            If ``X`` is not numeric.
+        ValueError
+            If ``strategy`` is unknown, ``fill_value`` is not a finite
+            number, or ``X`` is not 2-D, is empty, or contains ``±inf``.
+
+        Warns
+        -----
+        UserWarning
+            If a column is entirely NaN and the strategy is not 'constant'.
+
+        Complexity
+        ----------
+        O(n·m) for 'mean'/'constant', O(n·m) average for 'median'
+        (partition-based), O(n log n · m) for 'most_frequent'.
+        """
+        if self.strategy not in _IMPUTE_STRATEGIES:
+            raise ValueError(f"strategy must be one of {_IMPUTE_STRATEGIES}, got {self.strategy!r}")
+        try:
+            fill = float(self.fill_value)
+        except (TypeError, ValueError):
+            raise ValueError(f"fill_value must be a number, got {self.fill_value!r}") from None
+        if not np.isfinite(fill):
+            raise ValueError(f"fill_value must be finite, got {self.fill_value!r}")
+
+        X = _check_numeric(X, "SimpleImputer")
+        _check_n_features(self, X, reset=True)
+
+        if self.strategy == "constant":
+            stats = np.full(X.shape[1], fill)
+        else:
+            if self.strategy == "mean":
+                amax = _safe_divisor(_nan_stat(np.nanmax, np.abs(X)))  # overflow guard
+                stats = _nan_stat(np.nanmean, X / amax) * amax
+            elif self.strategy == "median":
+                stats = _nan_stat(np.nanmedian, X)
+            else:
+                stats = _nan_mode(X)
+
+            empty = np.isnan(stats)
+            if empty.any():
+                warnings.warn(
+                    f"SimpleImputer: columns {np.flatnonzero(empty).tolist()} are entirely NaN; "
+                    f"filling them with fill_value={fill}",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                stats = np.where(empty, fill, stats)
+
+        self.statistics_ = stats
+        return self
+
+    def transform(self, X) -> np.ndarray:
+        """Replace every NaN in ``X`` with its column's ``statistics_`` value.
+
+        Parameters
+        ----------
+        X : array-like of numbers, shape (n_samples, n_features_in_)
+
+        Returns
+        -------
+        X_out : ndarray of float64, shape (n_samples, n_features_in_)
+            Copy of ``X`` with no NaN values.
+
+        Raises
+        ------
+        NotFittedError
+            If called before ``fit``.
+        TypeError
+            If ``X`` is not numeric.
+        ValueError
+            If ``X`` is not 2-D, contains ``±inf``, or its column count
+            differs from ``n_features_in_``.
+
+        Complexity
+        ----------
+        O(n·m) time and memory.
+        """
+        _check_fitted(self, "statistics_")
+        X = _check_numeric(X, "SimpleImputer")
+        _check_n_features(self, X, reset=False)
+        return np.where(np.isnan(X), self.statistics_, X)
