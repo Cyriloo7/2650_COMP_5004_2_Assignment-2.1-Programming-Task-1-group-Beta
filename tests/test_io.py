@@ -317,3 +317,19 @@ def test_invalid_chunksize_raises_eagerly(write_csv, chunksize, exc):
 def test_chunks_missing_file_raises_eagerly(tmp_path):
     with pytest.raises(FileNotFoundError):
         read_csv_chunks(tmp_path / "nope.csv", 10)
+
+def test_usecols_accepts_a_single_name_or_index(write_csv):
+    path = write_csv("a,b,c\n1,2,3\n4,5,6\n")
+    X, cols = read_csv(path, usecols="b")  # a bare string, not a list
+    assert cols == ["b"] and X.shape == (2, 1)
+    np.testing.assert_array_equal(X.ravel(), [2, 5])
+    X, cols = read_csv(path, usecols=-1)  # a bare int, negative allowed
+    assert cols == ["c"]
+    np.testing.assert_array_equal(X.ravel(), [3, 6])
+
+
+def test_explicit_unicode_dtype_returns_text(write_csv):
+    S, cols = read_csv(write_csv("city,code\nPerth,WA\n,SA\n"), dtype="<U10")
+    assert cols == ["city", "code"]
+    assert S.dtype == np.dtype("<U10")
+    np.testing.assert_array_equal(S, [["Perth", "WA"], ["", "SA"]])
