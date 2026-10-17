@@ -595,3 +595,206 @@ class SimpleImputer(TransformerMixin):
         X = _check_numeric(X, "SimpleImputer")
         _check_n_features(self, X, reset=False)
         return np.where(np.isnan(X), self.statistics_, X)
+
+
+# ----------------------------------------------------------------------------
+# OneHotEncoder
+# ----------------------------------------------------------------------------
+_HANDLE_UNKNOWN = ("error", "ignore")
+_TEXT_KINDS, _NUMBER_KINDS = "US", "biuf"
+
+
+def _kind_group(dtype: np.dtype) -> str:
+    """Classify a dtype as 'text', 'number' or 'object' for compatibility checks."""
+    if dtype.kind in _TEXT_KINDS:
+        return "text"
+    if dtype.kind in _NUMBER_KINDS:
+        return "number"
+    if dtype.kind == "O":
+        return "object"
+    raise TypeError(f"OneHotEncoder cannot encode dtype {dtype}")
+
+
+class OneHotEncoder(TransformerMixin):
+    """Encode each categorical column as a block of 0/1 indicator columns.
+
+    ``fit`` stores ``categories_[j] = np.unique(X[:, j])``; ``transform``
+    builds each block by broadcasting ``X[:, j][:, None] == categories_[j]``
+    and joins the blocks with ``np.hstack``.
+
+    Parameters
+    ----------
+    handle_unknown : {'error', 'ignore'}, default 'error'
+        What to do with a category at transform time that was not seen in
+        ``fit``:
+
+        * ``'error'`` (default): raise ``ValueError`` naming the column and
+          the unseen values. Safest: a new category usually means the
+          training data was not representative, or the data is wrong.
+        * ``'ignore'``: encode the unseen value as an all-zero block for
+          that column. Output shape is unchanged, so downstream steps keep
+          working; the row simply matches no known category.
+    dtype : numeric dtype, default numpy.float64
+        dtype of the output array.
+
+    Attributes
+    ----------
+    categories_ : list of ndarray, length n_features
+        Sorted unique values of each column (``np.unique``). Column ``j``
+        contributes ``len(categories_[j])`` output columns, in this order.
+    n_features_in_ : int
+        Number of columns seen in ``fit``.
+
+    Notes
+    -----
+    * Accepts string columns (e.g. ``read_csv(..., dtype=str)``), numeric
+      columns, or object arrays.
+    * **Missing values are a category:** ``''`` in string data and ``NaN``
+      in numeric data each get their own indicator column (all NaNs count
+      as one category).
+    * Strings and numbers never match each other: transforming numeric
+      data with an encoder fitted on strings (or vice versa) raises
+      ``TypeError`` rather than silently reporting every value as unknown.
+    * The loop runs over columns, not rows, because each column has a
+      different number of categories; each block is fully vectorised.
+    """
+
+    def __init__(self, handle_unknown: str = "error", dtype=np.float64):
+        self.handle_unknown = handle_unknown
+        self.dtype = dtype
+
+    def fit(self, X, y=None) -> "OneHotEncoder":
+        """Learn the sorted unique categories of every column.
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            Categorical data (strings, numbers or objects).
+        y : ignored
+
+        Returns
+        -------
+        self : OneHotEncoder
+
+        Raises
+        ------
+        TypeError
+            If the dtype cannot be encoded or an object column mixes
+            incomparable types (e.g. ``str`` and ``int``).
+        ValueError
+            If ``handle_unknown`` is invalid, or ``X`` is not 2-D or empty.
+
+        Complexity
+        ----------
+        O(n log n · m) time (one sort per column); O(Σ k_j) stored state
+        for ``k_j`` categories in column ``j``.
+        """
+        if self.handle_unknown not in _HANDLE_UNKNOWN:
+            raise ValueError(
+                f"handle_unknown must be one of {_HANDLE_UNKNOWN}, got {self.handle_unknown!r}"
+            )
+        X = _check_2d(X, "OneHotEncoder")
+        self._kind = _kind_group(X.dtype)
+        _check_n_features(self, X, reset=True)
+        try:
+            self.categories_ = [np.unique(X[:, j]) for j in range(X.shape[1])]
+        except TypeError as exc:
+            raise TypeError(f"OneHotEncoder: a column mixes incomparable types ({exc})") from None
+        return self
+
+    def transform(self, X) -> np.ndarray:
+        """Return the one-hot encoding of ``X``.
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features_in_)
+
+        Returns
+        -------
+        X_out : ndarray of ``dtype``, shape (n_samples, sum_j len(categories_[j]))
+            For each input column, one indicator column per category, in
+            the order of ``categories_``.
+
+        Raises
+        ------
+        NotFittedError
+            If called before ``fit``.
+        TypeError
+            If ``X`` holds strings but the encoder was fitted on numbers,
+            or vice versa.
+        ValueError
+            If ``X`` is not 2-D, its column count differs from
+            ``n_features_in_``, or (with ``handle_unknown='error'``) it
+            contains a category not seen in ``fit``.
+
+        Complexity
+        ----------
+        O(n · Σ k_j) time and memory: each block is an ``n × k_j``
+        broadcast comparison.
+        """
+        _check_fitted(self, "categories_")
+        X = _check_2d(X, "OneHotEncoder")
+        kind = _kind_group(X.dtype)
+        if "object" not in (kind, self._kind) and kind != self._kind:
+            raise TypeError(
+                f"OneHotEncoder was fitted on {self._kind} data but transform got "
+                f"{kind} data (dtype {X.dtype})"
+            )
+        _check_n_features(self, X, reset=False)
+
+        blocks = []
+        for j, cats in enumerate(self.categories_):
+            col = X[:, j]
+            block = col[:, None] == cats[None, :]
+            if col.dtype.kind == "f" and cats.dtype.kind == "f":
+                block |= np.isnan(col)[:, None] & np.isnan(cats)[None, :]
+
+            unknown = ~block.any(axis=1)
+            if unknown.any() and self.handle_unknown == "error":
+                seen = np.unique(col[unknown])
+                shown = ", ".join(repr(v.item() if hasattr(v, "item") else v) for v in seen[:5])
+                more = f" and {seen.size - 5} more" if seen.size > 5 else ""
+                raise ValueError(
+                    f"OneHotEncoder: found unknown categories [{shown}]{more} in column {j} "
+                    f"during transform (first at row {int(np.argmax(unknown))}). "
+                    "Use handle_unknown='ignore' to encode them as all zeros."
+                )
+            blocks.append(block)
+
+        return np.hstack(blocks).astype(self.dtype, copy=False)
+
+    def get_feature_names_out(self, input_features=None) -> np.ndarray:
+        """Names of the output columns, e.g. ``['city_Adelaide', 'city_Perth']``.
+
+        Parameters
+        ----------
+        input_features : sequence of str, optional
+            Input column names (e.g. the ``colnames`` returned by
+            ``read_csv``). Default: ``'x0', 'x1', ...``.
+
+        Returns
+        -------
+        names : ndarray of str, shape (n_features_out,)
+            ``f"{input_feature}_{category}"`` for every output column.
+
+        Raises
+        ------
+        NotFittedError
+            If called before ``fit``.
+        ValueError
+            If ``input_features`` has the wrong length.
+
+        Complexity
+        ----------
+        O(Σ k_j) time and memory.
+        """
+        _check_fitted(self, "categories_")
+        if input_features is None:
+            input_features = [f"x{j}" for j in range(self.n_features_in_)]
+        elif len(input_features) != self.n_features_in_:
+            raise ValueError(
+                f"input_features has {len(input_features)} names, expected {self.n_features_in_}"
+            )
+        names = [f"{name}_{cat}" for name, cats in zip(input_features, self.categories_)
+                            for cat in cats.tolist()]
+        return np.asarray(names, dtype=str)

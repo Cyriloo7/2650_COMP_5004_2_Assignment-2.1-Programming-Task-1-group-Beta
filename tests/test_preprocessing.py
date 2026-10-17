@@ -328,3 +328,108 @@ def test_imputer_transform_column_mismatch_raises():
     with pytest.raises(ValueError, match="X has 2 features, but SimpleImputer was fitted with 3"):
         imp.transform(np.ones((1, 2)))
 
+
+# ----------------------------------------------------------------------------
+# OneHotEncoder
+# ----------------------------------------------------------------------------
+CITIES = np.array([["Perth", "M"], ["Adelaide", "F"], ["Perth", "F"], ["Darwin", "M"]])
+
+
+def test_onehot_categories_sorted_and_blocks_in_column_order():
+    enc = pp.OneHotEncoder().fit(CITIES)
+    assert [c.tolist() for c in enc.categories_] == [["Adelaide", "Darwin", "Perth"], ["F", "M"]]
+    out = enc.transform(CITIES)
+    assert out.dtype == np.float64
+    np.testing.assert_array_equal(
+        out,
+        [
+            [0, 0, 1, 0, 1],
+            [1, 0, 0, 1, 0],
+            [0, 0, 1, 1, 0],
+            [0, 1, 0, 0, 1],
+        ],
+    )
+    np.testing.assert_array_equal(out.sum(axis=1), 2)  # one hot per input column
+
+
+def test_onehot_unseen_category_raises_by_default():
+    enc = pp.OneHotEncoder().fit(CITIES)
+    unseen = np.array([["Perth", "M"], ["Hobart", "F"]])
+    with pytest.raises(ValueError, match=r"unknown categories \['Hobart'\] in column 0.*row 1"):
+        enc.transform(unseen)
+
+
+def test_onehot_unseen_category_ignore_gives_all_zero_block():
+    enc = pp.OneHotEncoder(handle_unknown="ignore").fit(CITIES)
+    out = enc.transform(np.array([["Hobart", "F"], ["Perth", "X"]]))
+    assert out.shape == (2, 5)
+    np.testing.assert_array_equal(out, [[0, 0, 0, 1, 0], [0, 0, 1, 0, 0]])
+
+
+def test_onehot_unseen_message_truncates_long_lists():
+    enc = pp.OneHotEncoder().fit([[0], [1]])
+    with pytest.raises(ValueError, match=r"\[2, 3, 4, 5, 6\] and 4 more"):
+        enc.transform(np.arange(2, 11).reshape(-1, 1))
+
+
+def test_onehot_missing_values_are_their_own_category():
+    enc = pp.OneHotEncoder().fit(np.array([["a"], [""], ["a"]]))
+    assert enc.categories_[0].tolist() == ["", "a"]
+    num = pp.OneHotEncoder().fit(np.array([[1.0], [np.nan], [np.nan], [2.0]]))
+    assert num.categories_[0].size == 3  # all NaNs collapse to one category
+    np.testing.assert_array_equal(num.transform([[np.nan], [2.0]]), [[0, 0, 1], [0, 1, 0]])
+
+
+def test_onehot_numeric_categories_and_custom_dtype():
+    enc = pp.OneHotEncoder(dtype=np.int8).fit([[3], [1], [3]])
+    out = enc.transform([[1], [3]])
+    assert out.dtype == np.int8
+    np.testing.assert_array_equal(out, [[1, 0], [0, 1]])
+    np.testing.assert_array_equal(enc.transform([[1.0]]), [[1, 0]])  # int/float compatible
+
+
+def test_onehot_string_vs_number_mismatch_raises_type_error():
+    enc = pp.OneHotEncoder().fit(CITIES)
+    with pytest.raises(TypeError, match="fitted on text data but transform got number"):
+        enc.transform(np.ones((2, 2)))
+
+
+def test_onehot_mixed_object_column_raises_type_error():
+    with pytest.raises(TypeError, match="incomparable types"):
+        pp.OneHotEncoder().fit(np.array([["a"], [1]], dtype=object))
+
+
+def test_onehot_invalid_handle_unknown_raises():
+    with pytest.raises(ValueError, match="handle_unknown"):
+        pp.OneHotEncoder(handle_unknown="skip").fit(CITIES)
+
+
+def test_onehot_transform_column_mismatch_raises():
+    enc = pp.OneHotEncoder().fit(CITIES)
+    with pytest.raises(ValueError, match="X has 1 features, but OneHotEncoder was fitted with 2"):
+        enc.transform(CITIES[:, :1])
+
+
+def test_onehot_feature_names():
+    enc = pp.OneHotEncoder().fit(CITIES)
+    assert enc.get_feature_names_out().tolist()[:2] == ["x0_Adelaide", "x0_Darwin"]
+    names = enc.get_feature_names_out(["city", "sex"]).tolist()
+    assert names == ["city_Adelaide", "city_Darwin", "city_Perth", "sex_F", "sex_M"]
+    with pytest.raises(ValueError, match="expected 2"):
+        enc.get_feature_names_out(["city"])
+
+
+def test_end_to_end_with_read_csv(tmp_path):
+    from numcompute.io import read_csv
+
+    path = tmp_path / "people.csv"
+    path.write_text("age,city,income\n25,Adelaide,50000\n,NA,61000\n40,Perth,\n31,Perth,58000\n")
+    X_num, _ = read_csv(path, usecols=["age", "income"])
+    X_cat, cat_cols = read_csv(path, usecols=["city"], dtype=str)
+
+    X_num = pp.StandardScaler().fit_transform(pp.SimpleImputer(strategy="median").fit_transform(X_num))
+    enc = pp.OneHotEncoder().fit(X_cat)
+    features = np.hstack([X_num, enc.transform(X_cat)])
+
+    assert features.shape == (4, 5) and not np.isnan(features).any()
+    assert enc.get_feature_names_out(cat_cols).tolist() == ["city_", "city_Adelaide", "city_Perth"]
