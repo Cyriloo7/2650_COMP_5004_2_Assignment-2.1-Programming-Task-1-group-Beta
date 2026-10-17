@@ -433,3 +433,24 @@ def test_end_to_end_with_read_csv(tmp_path):
 
     assert features.shape == (4, 5) and not np.isnan(features).any()
     assert enc.get_feature_names_out(cat_cols).tolist() == ["city_", "city_Adelaide", "city_Perth"]
+
+# ----------------------------------------------------------------------------
+# Extra input forms (object-dtype input, unsupported dtype)
+# ----------------------------------------------------------------------------
+def test_object_dtype_numbers_are_accepted_by_numeric_transformers():
+    X = np.array([[1, 2.0], [3, None]], dtype=object)  # None -> NaN
+    out = pp.SimpleImputer().fit_transform(X)
+    assert out.dtype == np.float64
+    np.testing.assert_array_equal(out, [[1, 2], [3, 2]])
+
+
+def test_object_dtype_with_text_raises_type_error():
+    X = np.array([[1, "a"], [2, "b"]], dtype=object)
+    with pytest.raises(TypeError, match="non-numeric objects"):
+        pp.StandardScaler().fit(X)
+
+
+def test_onehot_unsupported_dtype_raises_type_error():
+    dates = np.array([["2026-01-01"], ["2026-02-01"]], dtype="datetime64[D]")
+    with pytest.raises(TypeError, match="cannot encode dtype datetime64"):
+        pp.OneHotEncoder().fit(dates)
