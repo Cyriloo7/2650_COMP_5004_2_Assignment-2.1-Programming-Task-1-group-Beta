@@ -372,3 +372,47 @@ def test_feature_union_non_2d_output_raises():
 def test_feature_union_transform_before_fit_raises_not_fitted():
     with pytest.raises(pp.NotFittedError):
         pl.FeatureUnion([("z", pp.StandardScaler())]).transform(X_NUM)
+
+
+# ----------------------------------------------------------------------------
+# Integration: nesting and the package-level API
+# ----------------------------------------------------------------------------
+def test_pipeline_with_feature_union_step_then_model():
+    pipe = pl.Pipeline(
+        [
+            ("impute", pp.SimpleImputer(strategy="median")),
+            ("features", pl.FeatureUnion([("z", pp.StandardScaler()), ("mm", pp.MinMaxScaler())])),
+            ("model", MeanModel()),
+        ]
+    )
+    pipe.fit(X_NAN, Y)
+    assert pipe.named_steps["model"].fit_X_.shape == (30, 8)
+    np.testing.assert_allclose(pipe.predict(X_NAN[:4]), np.full(4, Y.mean()))
+    union = pipe.named_steps["features"]
+    np.testing.assert_allclose(
+        union.named_transformers["mm"].min_,
+        np.nanmin(pp.SimpleImputer(strategy="median").fit_transform(X_NAN), axis=0),
+    )
+
+
+def test_feature_union_of_pipelines_mixes_numeric_and_categorical_branches():
+    X_cat = np.array([["a"], ["b"], ["a"], ["c"]])
+    X_num = np.array([[1.0], [np.nan], [3.0], [5.0]])
+    numeric = pl.Pipeline([("impute", pp.SimpleImputer()), ("scale", pp.StandardScaler())])
+    categorical = pl.Pipeline([("onehot", pp.OneHotEncoder())])
+    features = np.hstack([numeric.fit_transform(X_num), categorical.fit_transform(X_cat)])
+    assert features.shape == (4, 4) and not np.isnan(features).any()
+
+    # The same idea as a single object: a union whose members are pipelines.
+    union = pl.FeatureUnion(
+        [("num", pl.Pipeline([("impute", pp.SimpleImputer())])), ("z", pp.StandardScaler())]
+    )
+    out = union.fit_transform(np.array([[1.0], [3.0]]))
+    np.testing.assert_allclose(out, [[1.0, -1.0], [3.0, 1.0]])
+
+
+def test_package_level_imports():
+    import numcompute
+
+    assert numcompute.Pipeline is pl.Pipeline
+    assert numcompute.FeatureUnion is pl.FeatureUnion
