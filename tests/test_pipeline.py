@@ -287,3 +287,88 @@ def test_len_and_repr():
         "Pipeline([('scale', StandardScaler(with_mean=True, with_std=True)), ('model',"
     )
 
+
+# ----------------------------------------------------------------------------
+# FeatureUnion
+# ----------------------------------------------------------------------------
+def test_feature_union_hstacks_member_outputs():
+    union = pl.FeatureUnion([("z", pp.StandardScaler()), ("mm", pp.MinMaxScaler())])
+    out = union.fit_transform(X_NUM)
+    expected = np.hstack(
+        [pp.StandardScaler().fit_transform(X_NUM), pp.MinMaxScaler().fit_transform(X_NUM)]
+    )
+    assert out.shape == (30, 8)
+    np.testing.assert_allclose(out, expected)
+
+
+def test_feature_union_fit_transform_matches_fit_then_transform():
+    def make():
+        return pl.FeatureUnion([("z", pp.StandardScaler()), ("add", AddOne()), ("dbl", Doubler())])
+
+    np.testing.assert_allclose(make().fit_transform(X_NUM), make().fit(X_NUM).transform(X_NUM))
+
+
+def test_feature_union_fit_returns_self_and_fits_each_member_once():
+    dbl = Doubler()
+    union = pl.FeatureUnion([("dbl", dbl), ("z", pp.StandardScaler())])
+    assert union.fit(X_NUM, Y) is union
+    assert dbl.fit_calls == 1 and dbl.seen_y is Y
+
+
+def test_feature_union_member_without_transform_raises_clear_error():
+    with pytest.raises(TypeError) as exc:
+        pl.FeatureUnion([("z", pp.StandardScaler()), ("model", MeanModel())])
+    msg = str(exc.value)
+    assert "FeatureUnion step 'model' (MeanModel) must implement fit and transform" in msg
+    assert "missing: transform" in msg
+
+
+@pytest.mark.parametrize(
+    "transformers, exc",
+    [([], ValueError), ([("a", AddOne()), ("a", Doubler())], ValueError), ([("only", OnlyFit())], TypeError)],
+)
+def test_feature_union_bad_construction(transformers, exc):
+    with pytest.raises(exc):
+        pl.FeatureUnion(transformers)
+
+
+def test_feature_union_named_transformers_and_repr():
+    z = pp.StandardScaler()
+    union = pl.FeatureUnion([("z", z), ("add", AddOne())])
+    assert union.named_transformers["z"] is z
+    assert list(union.named_transformers) == ["z", "add"]
+    assert repr(union).startswith("FeatureUnion([('z', StandardScaler(")
+
+
+class DropsARow:
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        return np.asarray(X)[:-1]
+
+
+class Flattens:
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        return np.asarray(X).ravel()
+
+
+@pytest.mark.parametrize("method", ["fit_transform", "transform"])
+def test_feature_union_row_mismatch_raises(method):
+    union = pl.FeatureUnion([("z", pp.StandardScaler()), ("drop", DropsARow())]).fit(X_NUM)
+    with pytest.raises(ValueError, match="member 'drop' returned 29 rows, expected 30"):
+        getattr(union, method)(X_NUM)
+
+
+def test_feature_union_non_2d_output_raises():
+    union = pl.FeatureUnion([("flat", Flattens())])
+    with pytest.raises(ValueError, match=r"member 'flat' returned a 1-D output.*2-D array"):
+        union.fit_transform(X_NUM)
+
+
+def test_feature_union_transform_before_fit_raises_not_fitted():
+    with pytest.raises(pp.NotFittedError):
+        pl.FeatureUnion([("z", pp.StandardScaler())]).transform(X_NUM)

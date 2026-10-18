@@ -297,3 +297,156 @@ class Pipeline:
         last = self._last("predict", "predict")
         return last.predict(self._transform_until_last(X))
 
+
+# ----------------------------------------------------------------------------
+# FeatureUnion
+# ----------------------------------------------------------------------------
+class FeatureUnion:
+    """Apply several transformers to the same ``X`` and stack their outputs.
+
+    ``transform(X)`` returns
+    ``np.hstack([t.transform(X) for _, t in transformers])``.
+
+    Parameters
+    ----------
+    transformers : list of (str, object)
+        ``(name, transformer)`` pairs; each must have ``fit`` and
+        ``transform``. Names must be unique.
+
+    Attributes
+    ----------
+    transformers : list of (str, object)
+        A copy of the validated pairs.
+    named_transformers : dict
+        ``{name: transformer}``.
+
+    Raises
+    ------
+    TypeError
+        At construction, if ``transformers`` is malformed or a member lacks
+        ``fit``/``transform``.
+    ValueError
+        At construction, if ``transformers`` is empty or names repeat.
+
+    Notes
+    -----
+    Every output must be 2-D with the same number of rows; otherwise
+    ``ValueError`` names the transformer at fault. Outputs are joined with
+    ``np.hstack``, so NumPy's type promotion applies: joining a string
+    output with a numeric one gives a string array. Keep the members'
+    outputs numeric (e.g. one-hot encode categories) to get a float result.
+
+    Examples
+    --------
+    >>> from numcompute.preprocessing import MinMaxScaler, StandardScaler
+    >>> union = FeatureUnion([("z", StandardScaler()), ("mm", MinMaxScaler())])
+    >>> union.fit_transform([[0.0], [2.0]])
+    array([[-1.,  0.],
+           [ 1.,  1.]])
+    """
+
+    def __init__(self, transformers):
+        transformers = _validate_named_steps(transformers, "FeatureUnion")
+        for name, t in transformers:
+            _require(t, name, "FeatureUnion", ("fit", "transform"),
+                     "Every FeatureUnion member must be a transformer.")
+        self.transformers = transformers
+
+    @property
+    def named_transformers(self) -> dict:
+        """``{name: transformer}`` for every member, in order."""
+        return dict(self.transformers)
+
+    def __repr__(self) -> str:
+        inner = ", ".join(f"({n!r}, {t!r})" for n, t in self.transformers)
+        return f"FeatureUnion([{inner}])"
+
+    def _stack(self, outputs, n_rows: int):
+        """Check every output is 2-D with ``n_rows`` rows, then ``np.hstack`` them."""
+        for (name, _), out in zip(self.transformers, outputs):
+            shape = np.shape(out)
+            if len(shape) != 2:
+                raise ValueError(
+                    f"FeatureUnion member {name!r} returned a {len(shape)}-D output with "
+                    f"shape {shape}; every member must return a 2-D array"
+                )
+            if shape[0] != n_rows:
+                raise ValueError(
+                    f"FeatureUnion member {name!r} returned {shape[0]} rows, expected "
+                    f"{n_rows} (the number of rows in X)"
+                )
+        return np.hstack(outputs)
+
+    def fit(self, X, y=None) -> "FeatureUnion":
+        """Fit every member on the same ``X``.
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+        y : array-like, optional
+            Passed to every member's ``fit`` when not ``None``.
+
+        Returns
+        -------
+        self : FeatureUnion
+
+        Complexity
+        ----------
+        Sum of the members' fit costs.
+        """
+        for _, t in self.transformers:
+            _fit(t, X, y)
+        return self
+
+    def transform(self, X):
+        """Transform ``X`` with every member and join the results column-wise.
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+
+        Returns
+        -------
+        X_out : ndarray, shape (n_samples, sum of members' output widths)
+            Member outputs side by side, in the order given.
+
+        Raises
+        ------
+        ValueError
+            If a member returns a non-2-D output or the wrong number of rows.
+        NotFittedError
+            (from the members) if the union has not been fitted.
+
+        Complexity
+        ----------
+        Sum of the members' transform costs plus O(n · total width) to stack.
+        """
+        n_rows = np.shape(X)[0]
+        return self._stack([t.transform(X) for _, t in self.transformers], n_rows)
+
+    def fit_transform(self, X, y=None):
+        """Fit every member and return the stacked transformed ``X``.
+
+        Equivalent to ``self.fit(X, y).transform(X)``, using each member's
+        ``fit_transform`` when it has one.
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+        y : array-like, optional
+
+        Returns
+        -------
+        X_out : ndarray, shape (n_samples, sum of members' output widths)
+
+        Raises
+        ------
+        ValueError
+            If a member returns a non-2-D output or the wrong number of rows.
+
+        Complexity
+        ----------
+        Sum of the members' fit + transform costs plus the stacking cost.
+        """
+        n_rows = np.shape(X)[0]
+        return self._stack([_fit_transform(t, X, y) for _, t in self.transformers], n_rows)
