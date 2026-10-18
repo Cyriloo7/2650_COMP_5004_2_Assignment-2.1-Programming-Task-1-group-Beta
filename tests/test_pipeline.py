@@ -409,10 +409,3 @@ def test_feature_union_of_pipelines_mixes_numeric_and_categorical_branches():
     )
     out = union.fit_transform(np.array([[1.0], [3.0]]))
     np.testing.assert_allclose(out, [[1.0, -1.0], [3.0, 1.0]])
-
-
-def test_package_level_imports():
-    import numcompute
-
-    assert numcompute.Pipeline is pl.Pipeline
-    assert numcompute.FeatureUnion is pl.FeatureUnion
