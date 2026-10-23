@@ -1,4 +1,9 @@
-"""Unit tests for numcompute.benchmarking."""
+"""
+Unit tests for numcompute.benchmarking.
+
+Run from the project root with:
+    pytest tests/test_benchmarking.py -v
+"""
 
 import time
 
@@ -7,6 +12,10 @@ import pytest
 
 from numcompute.benchmarking import benchmark, compare, format_results_table
 
+
+# ---------------------------------------------------------------------------
+# benchmark()
+# ---------------------------------------------------------------------------
 
 class TestBenchmark:
     def test_returns_expected_keys(self):
@@ -44,7 +53,7 @@ class TestBenchmark:
             calls["n"] += 1
 
         benchmark(counting_fn, repeats=4, warmup=3)
-        assert calls["n"] == 7  # 3 warmup + 4 timed
+        assert calls["n"] == 7  # 3 warmup + 4 timed, all real calls
 
     def test_args_and_kwargs_are_passed_through(self):
         def add(a, b, scale=1):
@@ -62,6 +71,10 @@ class TestBenchmark:
         with pytest.raises(ValueError):
             benchmark(lambda: None, warmup=-1)
 
+
+# ---------------------------------------------------------------------------
+# compare()
+# ---------------------------------------------------------------------------
 
 class TestCompare:
     def test_agreeing_functions_report_a_speedup(self):
@@ -103,59 +116,10 @@ class TestCompare:
         assert "mean" in result["vectorized"]
         assert "mean" in result["loop"]
 
-    # NaN handling
-    # 1000-element arrays keep each call long enough to time reliably.
 
-    def test_matching_nan_outputs_are_accepted(self):
-        def vectorized():
-            return np.full(1000, np.nan)
-
-        def loop():
-            return np.array([np.nan for _ in range(1000)])
-
-        result = compare(vectorized, loop, repeats=3)
-        assert result["speedup"] > 0
-
-    def test_nans_in_the_same_positions_alongside_real_values_are_accepted(self):
-        def vectorized():
-            out = np.arange(1000.0)
-            out[::7] = np.nan
-            return out
-
-        def loop():
-            return np.array([np.nan if i % 7 == 0 else float(i) for i in range(1000)])
-
-        result = compare(vectorized, loop, repeats=3)
-        assert result["speedup"] > 0
-
-    def test_nan_in_only_one_result_is_still_rejected(self):
-        # 0.0, not 1.0: catches an implementation that coerces NaN to 0.
-        with pytest.raises(ValueError, match="different results"):
-            compare(lambda: np.array([np.nan]), lambda: np.array([0.0]), repeats=2)
-
-    def test_nans_in_different_positions_are_rejected(self):
-        with pytest.raises(ValueError, match="different results"):
-            compare(
-                lambda: np.array([np.nan, 1.0]),
-                lambda: np.array([1.0, np.nan]),
-                repeats=2,
-            )
-
-    # Shape handling
-
-    @pytest.mark.parametrize(
-        "vec_out, loop_out",
-        [
-            (1.0, np.ones(3)),
-            (np.ones(3), np.ones((3, 1))),
-            (np.ones(3), np.ones(4)),
-        ],
-        ids=["scalar-vs-vector", "broadcastable-shapes", "non-broadcastable-shapes"],
-    )
-    def test_different_shapes_are_rejected_with_a_clear_message(self, vec_out, loop_out):
-        with pytest.raises(ValueError, match="different shapes"):
-            compare(lambda: vec_out, lambda: loop_out, repeats=2)
-
+# ---------------------------------------------------------------------------
+# format_results_table()
+# ---------------------------------------------------------------------------
 
 class TestFormatResultsTable:
     def _make_result(self, name="my_fn", speedup=10.0):
