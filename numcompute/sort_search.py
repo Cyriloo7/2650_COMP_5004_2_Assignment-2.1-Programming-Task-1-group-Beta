@@ -12,8 +12,13 @@ Provides
 
 NaN policy (one rule per function, all documented in the docstrings)
 --------------------------------------------------------------------
-- stable_sort / multi_key_sort : NaNs are sorted to the END (NumPy's
+- stable_sort                  : NaNs are sorted to the END (NumPy's
   behaviour), so they never disturb the order of real values.
+- multi_key_sort               : NaNs are sorted to the END of an
+  ASCENDING key and to the START of a DESCENDING key. A descending sort
+  is the exact reverse of an ascending one, and NaN counts as the
+  largest value. Example for one column: ``[1, nan, 3]`` gives
+  ``[1, 3, nan]`` ascending and ``[nan, 3, 1]`` descending.
 - topk                         : NaNs are IGNORED. They can never be in
   the result, and they do not count towards `len(values)` when k is
   clamped.
@@ -21,9 +26,49 @@ NaN policy (one rule per function, all documented in the docstrings)
   NaN are always False, which would break partitioning), so a ValueError
   is raised.
 - binary_search                : a NaN search value `x` raises ValueError.
+
+Input-type policy
+-----------------
+- Integer parameters (`k`, the entries of `keys`) must be real integers.
+  Floats such as ``1.5`` or ``2.0``, strings and booleans raise
+  TypeError. Integers that are out of range raise ValueError.
+- topk / quickselect / binary_search need numeric (or boolean) arrays.
+  Text or object arrays raise TypeError.
 """
 
+import numbers
+
 import numpy as np
+
+
+# ----------------------------------------------------------------------
+# Private validation helpers
+# ----------------------------------------------------------------------
+
+def _check_integer(value, name):
+    """Return `value` as a Python int, or raise TypeError if it is not an integer.
+
+    Booleans are rejected on purpose (``True`` is technically an int in
+    Python, but ``k=True`` is almost certainly a mistake). NumPy integer
+    scalars such as ``np.int64(3)`` are accepted.
+    """
+    if isinstance(value, bool) or not isinstance(value, numbers.Integral):
+        raise TypeError(
+            f"{name} must be an integer, got {type(value).__name__} ({value!r})"
+        )
+    return int(value)
+
+
+def _check_numeric_dtype(arr, func_name):
+    """Raise TypeError unless `arr` holds booleans, integers or floats.
+
+    This turns an obscure crash deep inside NumPy (for example
+    ``np.isnan`` on a string array) into a clear message up front.
+    """
+    if arr.dtype.kind not in "biuf":
+        raise TypeError(
+            f"{func_name}() expects a numeric array, got dtype {arr.dtype}"
+        )
 
 
 # ----------------------------------------------------------------------
@@ -60,6 +105,7 @@ def stable_sort(arr, axis=-1):
     """
     return np.sort(np.asarray(arr), axis=axis, kind="stable")
 
+
 def multi_key_sort(data, keys, ascending=None):
     """Sort the rows of a 2D array by several columns at once.
 
@@ -76,6 +122,7 @@ def multi_key_sort(data, keys, ascending=None):
         2D array; each row is one record.
     keys : sequence of int
         Column indices to sort by. The last one is the primary key.
+        Negative indices count from the last column.
     ascending : sequence of bool, optional
         One flag per key (same order as `keys`). ``True`` = ascending.
         Defaults to all ascending.
@@ -87,6 +134,9 @@ def multi_key_sort(data, keys, ascending=None):
 
     Raises
     ------
+    TypeError
+        If `keys` is not a sequence, or any key is not an integer
+        (for example ``1.5`` or ``"a"``).
     ValueError
         If `data` is not 2D, `keys` is empty, a key is out of range, or
         `ascending` has a different length from `keys`.
@@ -96,7 +146,13 @@ def multi_key_sort(data, keys, ascending=None):
     The sort is stable, so rows that tie on every key keep their
     original order. Descending order is done by negating the dense rank
     of a column (not the raw values), so it works for any dtype and
-    never overflows. NaNs are placed at the end of ascending keys.
+    never overflows.
+
+    NaN position: NaNs go to the END of an ascending key but to the
+    START of a descending key (NaN counts as the largest value, and a
+    descending sort reverses the order). For one column,
+    ``[1, nan, 3]`` becomes ``[1, 3, nan]`` ascending and
+    ``[nan, 3, 1]`` descending.
 
     Complexity
     ----------
@@ -106,9 +162,18 @@ def multi_key_sort(data, keys, ascending=None):
     if data.ndim != 2:
         raise ValueError(f"multi_key_sort() expects a 2D array, got {data.ndim}D")
 
-    keys = list(keys)
+    try:
+        keys = list(keys)
+    except TypeError:
+        raise TypeError(
+            f"keys must be a sequence of column indices, got {type(keys).__name__}"
+        ) from None
     if len(keys) == 0:
         raise ValueError("keys must contain at least one column index")
+
+    # Type check first, range check second: comparing a string or a float
+    # key against n_cols would otherwise give a confusing message.
+    keys = [_check_integer(key, "key") for key in keys]
 
     n_cols = data.shape[1]
     for key in keys:
@@ -138,6 +203,11 @@ def multi_key_sort(data, keys, ascending=None):
     order = np.lexsort(tuple(sort_columns))
     return data[order]
 
+
+# ----------------------------------------------------------------------
+# Top-k
+# ----------------------------------------------------------------------
+
 def topk(values, k, largest=True, return_indices=True):
     """Return the k largest (or smallest) values of a 1D array, in order.
 
@@ -148,9 +218,9 @@ def topk(values, k, largest=True, return_indices=True):
     Parameters
     ----------
     values : array_like, shape (n,)
-        1D input. NaNs are ignored (see Notes).
+        1D numeric input. NaNs are ignored (see Notes).
     k : int
-        How many elements to return. Must be >= 1.
+        How many elements to return. Must be an integer >= 1.
     largest : bool, default True
         ``True`` -> k largest, sorted from largest to smallest.
         ``False`` -> k smallest, sorted from smallest to largest.
@@ -167,6 +237,9 @@ def topk(values, k, largest=True, return_indices=True):
 
     Raises
     ------
+    TypeError
+        If `k` is not an integer (for example ``2.7``), or `values` is
+        not a numeric array (for example a string).
     ValueError
         If `k <= 0` or `values` is not 1D.
 
@@ -184,8 +257,10 @@ def topk(values, k, largest=True, return_indices=True):
     Time: O(n + k log k) expected. Space: O(n).
     """
     values = np.asarray(values)
+    _check_numeric_dtype(values, "topk")
     if values.ndim != 1:
         raise ValueError(f"topk() expects a 1D array, got {values.ndim}D")
+    k = _check_integer(k, "k")
     if k <= 0:
         raise ValueError(f"k must be a positive integer, got {k}")
 
@@ -193,7 +268,7 @@ def topk(values, k, largest=True, return_indices=True):
     valid_positions = np.flatnonzero(~np.isnan(values))
     valid = values[valid_positions]
     n = valid.size
-    k_eff = min(int(k), n)  # clamp
+    k_eff = min(k, n)  # clamp
 
     if k_eff == 0:
         empty_values = values[:0]
@@ -215,6 +290,11 @@ def topk(values, k, largest=True, return_indices=True):
     top_values = values[top_indices]
     return (top_values, top_indices) if return_indices else top_values
 
+
+# ----------------------------------------------------------------------
+# Quickselect
+# ----------------------------------------------------------------------
+
 def quickselect(arr, k):
     """Return the k-th smallest element of `arr` (0-based) without fully sorting.
 
@@ -230,6 +310,7 @@ def quickselect(arr, k):
     k : int
         0-based rank to find: ``k=0`` is the minimum,
         ``k=n-1`` is the maximum, ``k=n//2`` is roughly the median.
+        Must be an integer.
 
     Returns
     -------
@@ -238,6 +319,9 @@ def quickselect(arr, k):
 
     Raises
     ------
+    TypeError
+        If `arr` is not a numeric array, or `k` is not an integer
+        (for example ``1.5``).
     ValueError
         If `arr` is not 1D, is empty, contains NaN, or `k` is outside
         ``[0, n-1]``.
@@ -255,6 +339,7 @@ def quickselect(arr, k):
     (the partitioning itself is in place and iterative, no recursion).
     """
     a = np.array(arr, copy=True)
+    _check_numeric_dtype(a, "quickselect")
     if a.ndim != 1:
         raise ValueError(f"quickselect() expects a 1D array, got {a.ndim}D")
     n = a.size
@@ -262,6 +347,7 @@ def quickselect(arr, k):
         raise ValueError("quickselect() cannot select from an empty array")
     if np.any(np.isnan(a)):
         raise ValueError("quickselect() does not support NaN values")
+    k = _check_integer(k, "k")
     if not 0 <= k < n:
         raise ValueError(f"k={k} is out of range for an array of length {n}")
 
@@ -290,6 +376,11 @@ def quickselect(arr, k):
         else:
             lo = store + 1
 
+
+# ----------------------------------------------------------------------
+# Binary search
+# ----------------------------------------------------------------------
+
 def binary_search(sorted_array, x):
     """Binary search in an ascending sorted 1D array.
 
@@ -300,10 +391,10 @@ def binary_search(sorted_array, x):
     Parameters
     ----------
     sorted_array : array_like, shape (n,)
-        1D array sorted in ascending order. This is assumed, not
+        1D numeric array sorted in ascending order. This is assumed, not
         checked (checking would cost O(n) and defeat the purpose).
     x : scalar
-        Value to look for.
+        Real number to look for.
 
     Returns
     -------
@@ -315,6 +406,9 @@ def binary_search(sorted_array, x):
 
     Raises
     ------
+    TypeError
+        If `sorted_array` is not a numeric array, or `x` is not a real
+        number (for example a string).
     ValueError
         If `sorted_array` is not 1D, or `x` is NaN.
 
@@ -323,8 +417,13 @@ def binary_search(sorted_array, x):
     Time: O(log n). Space: O(1).
     """
     a = np.asarray(sorted_array)
+    _check_numeric_dtype(a, "binary_search")
     if a.ndim != 1:
         raise ValueError(f"binary_search() expects a 1D array, got {a.ndim}D")
+    if not isinstance(x, numbers.Real):
+        raise TypeError(
+            f"x must be a real number, got {type(x).__name__} ({x!r})"
+        )
     if np.isnan(x):
         raise ValueError("binary_search() cannot search for NaN")
 
