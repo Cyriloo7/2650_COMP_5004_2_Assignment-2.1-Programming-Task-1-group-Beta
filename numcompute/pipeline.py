@@ -14,6 +14,19 @@ Requires:
     Python >= 3.9 and NumPy >= 1.23; no other numcompute modules. Steps are
     duck-typed: any object with the right methods works, with no base class
     to inherit from (the numcompute.preprocessing transformers all qualify).
+
+    How this maps to the brief
+    --------------------------
+    The brief lists "Transformer/Estimator API, Compose" for this module.
+
+    * Compose: ``Pipeline`` is the Compose abstraction. It composes steps one
+    after another into a single object with fit / transform / fit_transform /
+    predict. ``FeatureUnion`` is its side-by-side counterpart.
+    * Transformer/Estimator API: the contract is duck-typed, so no new base
+    class is needed (as the team spec says). A transformer is any object with
+    callable ``fit(X[, y])`` and ``transform(X)``; an estimator is any object
+    with callable ``fit(X[, y])`` and ``predict(X)``. ``Pipeline`` and
+    ``FeatureUnion`` check for these methods when they are constructed.
 """
 
 from __future__ import annotations
@@ -146,7 +159,15 @@ class Pipeline:
     # -- step access ---------------------------------------------------------
     @property
     def named_steps(self) -> dict:
-        """``{name: step}`` for every step, in order."""
+        """``{name: step}`` for every step, in order.
+
+        Returns
+        -------
+        dict of str to object
+            A new dict on each access, in step order. The step objects are
+            the pipeline's own (not copies), so ``pipe.named_steps['scale']``
+            shows fitted attributes after ``fit``.
+        """
         return dict(self.steps)
 
     def __len__(self) -> int:
@@ -354,7 +375,15 @@ class FeatureUnion:
 
     @property
     def named_transformers(self) -> dict:
-        """``{name: transformer}`` for every member, in order."""
+        """``{name: transformer}`` for every member, in order.
+
+        Returns
+        -------
+        dict of str to object
+            A new dict on each access, in member order. The transformer
+            objects are the union's own (not copies), so fitted attributes
+            are visible after ``fit``.
+        """
         return dict(self.transformers)
 
     def __repr__(self) -> str:
@@ -389,6 +418,13 @@ class FeatureUnion:
         Returns
         -------
         self : FeatureUnion
+
+        Raises
+        ------
+        Exception
+            Any error raised by a member's ``fit`` is passed through unchanged
+            (for example ``ValueError`` or ``TypeError`` for bad input).
+            Members fitted before the failing one stay fitted.
 
         Complexity
         ----------

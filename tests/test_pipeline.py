@@ -409,3 +409,53 @@ def test_feature_union_of_pipelines_mixes_numeric_and_categorical_branches():
     )
     out = union.fit_transform(np.array([[1.0], [3.0]]))
     np.testing.assert_allclose(out, [[1.0, -1.0], [3.0, 1.0]])
+
+
+# ----------------------------------------------------------------------------
+# Non-contiguous input (X[::2], X.T) through Pipeline and FeatureUnion
+# ----------------------------------------------------------------------------
+class _MeanCenter:
+    """Stateful transformer used only by the non-contiguous tests."""
+
+    def fit(self, X, y=None):
+        self.mean_ = np.asarray(X, dtype=float).mean(axis=0)
+        return self
+
+    def transform(self, X):
+        return np.asarray(X, dtype=float) - self.mean_
+
+
+_RNG_NC = np.random.default_rng(7)
+_NON_CONTIGUOUS = [
+    _RNG_NC.normal(size=(40, 6))[::2],  # X[::2]: every other row, shape (20, 6)
+    _RNG_NC.normal(size=(6, 40)).T,  # X.T: transposed view, shape (40, 6)
+]
+_IDS = ["X[::2]", "X.T"]
+
+
+@pytest.mark.parametrize("view", _NON_CONTIGUOUS, ids=_IDS)
+def test_pipeline_non_contiguous_input_matches_contiguous_copy(view):
+    assert not view.flags["C_CONTIGUOUS"]
+    copy = np.ascontiguousarray(view)
+
+    def make():
+        return pl.Pipeline([("center", _MeanCenter()), ("add", AddOne()), ("dbl", Doubler())])
+
+    np.testing.assert_allclose(make().fit_transform(view), make().fit_transform(copy))
+    np.testing.assert_allclose(make().fit(view).transform(view), make().fit(copy).transform(copy))
+    np.testing.assert_array_equal(view, copy)  # input left unchanged
+
+
+@pytest.mark.parametrize("view", _NON_CONTIGUOUS, ids=_IDS)
+def test_feature_union_non_contiguous_input_matches_contiguous_copy(view):
+    assert not view.flags["C_CONTIGUOUS"]
+    copy = np.ascontiguousarray(view)
+
+    def make():
+        return pl.FeatureUnion([("center", _MeanCenter()), ("add", AddOne()), ("dbl", Doubler())])
+
+    out = make().fit_transform(view)
+    assert out.shape == (view.shape[0], 3 * view.shape[1])
+    np.testing.assert_allclose(out, make().fit_transform(copy))
+    np.testing.assert_allclose(make().fit(view).transform(view), make().fit(copy).transform(copy))
+    np.testing.assert_array_equal(view, copy)  # input left unchanged
