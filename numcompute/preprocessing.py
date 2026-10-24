@@ -88,6 +88,14 @@ class TransformerMixin:
         X_out : numpy.ndarray, shape (n_samples, n_features_out)
             Transformed data.
 
+        Raises
+        ------
+        TypeError, ValueError
+            Whatever the subclass's ``fit`` or ``transform`` raises for bad
+            input, passed through unchanged (for example non-numeric data, a
+            non-2-D array, an empty array or an invalid parameter). See each
+            transformer's ``fit`` and ``transform`` for the exact cases.
+
         Complexity
         ----------
         Cost of ``fit`` plus cost of ``transform``.
