@@ -38,9 +38,92 @@ input's magnitude -- a fixed h=1e-5 step is far too small to register
 against an input like x[i]=1e8 (the change gets lost in
 floating-point rounding), and needlessly large relative to an input
 like x[i]=1e-8.
+
+h must be a finite number greater than zero. h=0 would divide by zero,
+a negative h only flips the direction of the step, and nan/inf would
+poison every estimate, so both functions reject them up front with a
+clear error.
 """
 
+import numbers
+
 import numpy as np
+
+
+def _check_step(h, owner):
+    """Check that the step size `h` is a finite number greater than zero.
+
+    Parameters
+    ----------
+    h : float
+        Step size passed by the caller.
+    owner : str
+        Name of the calling function, used in the error message.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    TypeError
+        If `h` is not a real number (strings, None, lists and bool are
+        rejected).
+    ValueError
+        If `h` is zero, negative, nan, or infinite.
+
+    Complexity
+    ----------
+    Time: O(1). Space: O(1).
+    """
+    if isinstance(h, bool) or not isinstance(h, numbers.Real):
+        raise TypeError(f"{owner}(): h must be a number, got {h!r}")
+    if not (np.isfinite(h) and h > 0):
+        raise ValueError(f"{owner}(): h must be finite and > 0, got {h!r}")
+
+
+def _as_scalar(value, owner):
+    """Turn the return value of `f(x)` into a float, or raise a clear error.
+
+    Parameters
+    ----------
+    value : object
+        Whatever `f(x)` returned. A Python or NumPy number (or a 0-d
+        array) is accepted.
+    owner : str
+        Name of the calling function, used in the error message.
+
+    Returns
+    -------
+    scalar : float
+        `value` as a plain float.
+
+    Raises
+    ------
+    TypeError
+        If `value` cannot be converted to a number at all (a string, a
+        ragged list, ...).
+    ValueError
+        If `value` is an array or list with one or more dimensions, i.e.
+        `f` returned a vector instead of a single number.
+
+    Complexity
+    ----------
+    Time: O(size of value) for the conversion. Space: O(1) for a scalar.
+    """
+    try:
+        arr = np.asarray(value, dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(
+            f"{owner}(): f(x) must return a single number, got "
+            f"{type(value).__name__}: {exc}"
+        ) from exc
+    if arr.ndim != 0:
+        raise ValueError(
+            f"{owner}(): f(x) must return a single number, got an array "
+            f"of shape {arr.shape}. Use jacobian() for vector-valued functions."
+        )
+    return float(arr)
 
 
 def grad(f, x, h=1e-5, method="central"):
@@ -54,8 +137,9 @@ def grad(f, x, h=1e-5, method="central"):
     x : array_like, shape (n,)
         The point at which to estimate the gradient.
     h : float, default 1e-5
-        Step size used to perturb each input dimension. See the module
-        docstring for the rounding-vs-truncation error trade-off.
+        Step size used to perturb each input dimension. Must be finite
+        and greater than zero. See the module docstring for the
+        rounding-vs-truncation error trade-off.
     method : {'central', 'forward'}, default 'central'
         - 'central': (f(x+h) - f(x-h)) / (2h) -- more accurate (error
           shrinks with h^2), but costs 2 function evaluations per
@@ -73,7 +157,12 @@ def grad(f, x, h=1e-5, method="central"):
     Raises
     ------
     ValueError
-        If `method` is not 'central' or 'forward', or if `x` is not 1D.
+        If `method` is not 'central' or 'forward', `x` is not 1D, `h`
+        is not finite and > 0, or `f(x)` returns an array instead of a
+        single number.
+    TypeError
+        If `h` is not a number, or `f(x)` returns something that is not
+        a number.
 
     Complexity
     ----------
@@ -90,6 +179,8 @@ def grad(f, x, h=1e-5, method="central"):
             f"Unknown method {method!r}; expected 'central' or 'forward'"
         )
 
+    _check_step(h, "grad")
+
     n = x.size
     gradient = np.empty(n, dtype=float)
 
@@ -98,7 +189,7 @@ def grad(f, x, h=1e-5, method="central"):
     # vectorised away without calling f in a way it may not support
     # (e.g. f may only accept one x at a time, not a batch of them).
     if method == "forward":
-        f_x = f(x)  # reused for every dimension, avoids recomputing it n times
+        f_x = _as_scalar(f(x), "grad")  # reused for every dimension, avoids recomputing it n times
 
     for i in range(n):
         # Scale h relative to the magnitude of this input dimension.
@@ -111,13 +202,15 @@ def grad(f, x, h=1e-5, method="central"):
 
         x_plus = x.copy()
         x_plus[i] += h_i
+        f_plus = _as_scalar(f(x_plus), "grad")
 
         if method == "central":
             x_minus = x.copy()
             x_minus[i] -= h_i
-            gradient[i] = (f(x_plus) - f(x_minus)) / (2 * h_i)
+            f_minus = _as_scalar(f(x_minus), "grad")
+            gradient[i] = (f_plus - f_minus) / (2 * h_i)
         else:  # forward
-            gradient[i] = (f(x_plus) - f_x) / h_i
+            gradient[i] = (f_plus - f_x) / h_i
 
     return gradient
 
@@ -133,11 +226,13 @@ def jacobian(F, x, h=1e-5, method="central"):
     x : array_like, shape (n,)
         The point at which to estimate the Jacobian.
     h : float, default 1e-5
-        Step size used to perturb each input dimension. See the module
-        docstring for the rounding-vs-truncation error trade-off.
+        Step size used to perturb each input dimension. Must be finite
+        and greater than zero. See the module docstring for the
+        rounding-vs-truncation error trade-off.
     method : {'central', 'forward'}, default 'central'
         Same trade-off as in grad(): 'central' is more accurate but
-        costs twice as many evaluations of F.
+        needs about twice as many evaluations of F (2n + 1 calls
+        versus n + 1 for 'forward').
 
     Returns
     -------
@@ -148,14 +243,18 @@ def jacobian(F, x, h=1e-5, method="central"):
     Raises
     ------
     ValueError
-        If `method` is invalid, `x` is not 1D, or F(x) does not return
-        a 1D array.
+        If `method` is invalid, `x` is not 1D, `h` is not finite and
+        > 0, or F(x) does not return a 1D array.
+    TypeError
+        If `h` is not a number.
 
     Complexity
     ----------
-    Time: O(n) evaluations of F (2n for central, n+1 for forward), each
-    costing O(m) to produce its output vector. Space: O(m * n) for the
-    output matrix.
+    Time: O(n) evaluations of F, each costing O(m) to produce its
+    output vector. F(x) is called once up front to find the output size
+    m, so central differences call F 2n + 1 times in total and forward
+    differences call it n + 1 times. Space: O(m * n) for the output
+    matrix.
     """
     x = np.asarray(x, dtype=float)
 
@@ -166,6 +265,8 @@ def jacobian(F, x, h=1e-5, method="central"):
         raise ValueError(
             f"Unknown method {method!r}; expected 'central' or 'forward'"
         )
+
+    _check_step(h, "jacobian")
 
     n = x.size
     f_x0 = np.asarray(F(x), dtype=float)

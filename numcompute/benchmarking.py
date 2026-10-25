@@ -1,14 +1,9 @@
-"""
-benchmarking.py -- A small timing harness for NumCompute.
+"""Timing utilities for comparing vectorized and loop-based implementations.
 
-Provides:
-    benchmark(func, *args, repeats=10, warmup=1, **kwargs)
-        -> timing stats for one function
-    compare(vectorized_fn, loop_fn, *args, repeats=10, **kwargs)
-        -> timing stats for both, plus the speedup, after checking they
-           actually produce the same result
-    format_results_table(results)
-        -> a Markdown table of one or more `compare()` results
+Functions:
+    benchmark: time repeated calls to one function.
+    compare: time two implementations and report the speedup.
+    format_results_table: render compare() results as a Markdown table.
 """
 
 import time
@@ -17,47 +12,40 @@ import numpy as np
 
 
 def benchmark(func, *args, repeats=10, warmup=1, **kwargs):
-    """
-    Time `func(*args, **kwargs)`, called `repeats` times, and summarise
-    the timings.
+    """Time repeated calls to `func(*args, **kwargs)`.
 
-    A few "warmup" calls are made first and their timings thrown away --
-    the very first call to a function is often slower than the rest
-    (memory allocation, disk/OS caching, etc.), and including it would
-    make the reported numbers less representative of steady-state speed.
+    Untimed warmup calls run first so one-off start-up costs do not skew
+    the results.
 
     Parameters
     ----------
     func : callable
-        The function to time. Called as `func(*args, **kwargs)`.
+        Function to time.
     *args, **kwargs
-        Passed straight through to `func` on every call.
+        Forwarded to `func` on every call.
     repeats : int, default=10
-        Number of timed calls to make (after warmup).
+        Number of timed calls.
     warmup : int, default=1
-        Number of untimed calls to make first.
+        Number of untimed calls made first.
 
     Returns
     -------
     dict
-        Keys:
-          'mean', 'std', 'min', 'max' : float, in seconds, over the
-              `repeats` timed calls.
-          'times' : ndarray, shape (repeats,)
-              Every individual timed duration, in seconds.
-          'result' : whatever `func` returned on its last timed call --
-              useful for `compare()` to check correctness without
-              calling `func` a second time.
+        'mean', 'std', 'min', 'max' : float
+            Timing statistics in seconds.
+        'times' : ndarray, shape (repeats,)
+            Duration of each timed call in seconds.
+        'result'
+            Return value of the last timed call.
 
     Raises
     ------
     ValueError
-        If `repeats` is not a positive integer, or `warmup` is negative.
+        If `repeats` < 1 or `warmup` < 0.
 
     Complexity
     ----------
-    O(warmup + repeats) calls to `func`; the harness itself adds
-    negligible overhead on top of whatever `func` costs.
+    O(warmup + repeats) calls to `func`.
     """
     if repeats < 1:
         raise ValueError(f"benchmark(): repeats must be a positive integer, got {repeats}")
@@ -86,57 +74,58 @@ def benchmark(func, *args, repeats=10, warmup=1, **kwargs):
 
 
 def compare(vectorized_fn, loop_fn, *args, repeats=10, **kwargs):
-    """
-    Benchmark `vectorized_fn` and `loop_fn` on identical input, and
-    report how much faster the vectorized version is.
+    """Time two implementations of one computation and report the speedup.
 
-    Before reporting a speedup, checks that the two functions actually
-    produced the same result (via `np.allclose`) -- a "fast" version
-    that's also wrong is a real risk when two different implementations
-    of the same computation are being compared, so this refuses to
-    report a speedup number for functions that disagree.
-
-    Note: both functions are called with the exact same argument
-    objects on every timed run. If either one mutates its input in
-    place, pass fresh copies in (e.g. via a small wrapper lambda),
-    since the same array would otherwise be reused, and possibly
-    already modified, on later calls.
+    Raises instead of reporting a speedup when the two results differ in
+    shape or value. Both functions receive the same argument objects on
+    every call, so pass copies if either one mutates its input.
 
     Parameters
     ----------
-    vectorized_fn : callable
-    loop_fn : callable
-        Both called as `fn(*args, **kwargs)`. Assumed to compute the
-        same thing in two different ways.
+    vectorized_fn, loop_fn : callable
+        Implementations to compare; each is called as `fn(*args, **kwargs)`.
     *args, **kwargs
-        Passed to both functions, unchanged.
+        Forwarded to both functions.
     repeats : int, default=10
-        Passed through to `benchmark` for both functions.
+        Timed calls per function.
 
     Returns
     -------
     dict
-        Keys:
-          'name' : str -- `vectorized_fn.__name__`, for labelling.
-          'vectorized' : dict -- full `benchmark()` result for vectorized_fn.
-          'loop' : dict -- full `benchmark()` result for loop_fn.
-          'speedup' : float -- loop_mean / vectorized_mean. A value of
-              8.0 means the vectorized version was 8x faster.
+        'name' : str
+            `vectorized_fn.__name__`.
+        'vectorized', 'loop' : dict
+            `benchmark()` result for each function.
+        'speedup' : float
+            Loop mean time divided by vectorized mean time.
 
     Raises
     ------
     ValueError
-        If the two functions' results don't agree (checked with
-        `np.allclose`).
+        If the results differ in shape, or in value under
+        `np.allclose(..., equal_nan=True)`.
 
     Complexity
     ----------
-    Same as calling `benchmark()` twice.
+    Two `benchmark()` runs.
     """
     vec_result = benchmark(vectorized_fn, *args, repeats=repeats, **kwargs)
     loop_result = benchmark(loop_fn, *args, repeats=repeats, **kwargs)
 
-    if not np.allclose(vec_result["result"], loop_result["result"]):
+    vec_out = np.asarray(vec_result["result"])
+    loop_out = np.asarray(loop_result["result"])
+
+    # np.allclose broadcasts, so check shapes explicitly first.
+    if vec_out.shape != loop_out.shape:
+        raise ValueError(
+            f"compare(): '{vectorized_fn.__name__}' returned a result of shape "
+            f"{vec_out.shape} but '{loop_fn.__name__}' returned shape "
+            f"{loop_out.shape} -- refusing to report a speedup for two "
+            "implementations whose outputs have different shapes"
+        )
+
+    # Matching NaNs count as agreement.
+    if not np.allclose(vec_out, loop_out, equal_nan=True):
         raise ValueError(
             f"compare(): '{vectorized_fn.__name__}' and '{loop_fn.__name__}' "
             "produced different results on the same input -- refusing to "
@@ -154,28 +143,26 @@ def compare(vectorized_fn, loop_fn, *args, repeats=10, **kwargs):
 
 
 def format_results_table(results):
-    """
-    Format one or more `compare()` results as a Markdown table.
+    """Render `compare()` results as a Markdown table.
 
     Parameters
     ----------
     results : dict or list[dict]
-        One `compare()` result, or a list of them (one row per result).
+        A `compare()` result, or a list of them (one row each).
 
     Returns
     -------
     str
-        A Markdown table with columns: Function, Vectorized (s),
-        Loop (s), Speedup.
+        Table with columns Function, Vectorized (s), Loop (s), Speedup.
 
     Raises
     ------
     ValueError
-        If `results` is an empty list.
+        If `results` is empty.
 
     Complexity
     ----------
-    O(k), where k is the number of results being formatted.
+    O(k) for k results.
     """
     if isinstance(results, dict):
         results = [results]
