@@ -301,7 +301,7 @@ Use `python -m pytest` rather than plain `pytest`: it makes sure the tests run i
 | Team member | Modules |
 |---|---|
 | Cyril ([@Cyriloo7](https://github.com/Cyriloo7)) | `stats.py`, `metrics.py`, `utils.py`, `benchmarking.py` |
-| *Teammate 2 (add name)* | `sort_search.py`, `rank.py`, `optim.py` |
+| Melvin ([@Melvin14120](https://github.com/melvin14120)) | `sort_search.py`, `rank.py`, `optim.py` |
 | Binitta ([@binittavar](https://github.com/binittavar)) | `io.py`, `preprocessing.py`, `pipeline.py` |
 
 ## Troubleshooting
