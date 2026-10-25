@@ -1,180 +1,198 @@
-"""
-benchmark/run_benchmarks.py -- vectorised NumCompute vs plain Python loops.
+"""Compare vectorised NumCompute functions with plain-Python loop versions.
 
-Run from the repo root:
+The input is the Housing dataset in Dataset/Housing.csv (545 houses, 13 columns).
+Rows with a missing value are dropped first, because the loop versions are not
+NaN-aware. Run from the repository root:
 
     python -m benchmark.run_benchmarks
 
-What it does
-------------
-For each case below it times the NumCompute (vectorised) function and a
-hand-written pure-Python loop that computes the same thing, using
-``numcompute.benchmarking.compare``. ``compare`` also checks that both
-give the same answer, so a speedup is only reported for correct code.
-
-The data comes from a fixed random seed, so results are reproducible
-(the timings themselves still vary a little between machines and runs).
-The environment details (Python, NumPy, OS, CPU) are printed and saved
-next to the table so the numbers can be interpreted later.
-
-Output is also written to ``benchmark/results.md``.
+`compare` checks that each pair gives the same answer before reporting a
+speedup, so a fast but wrong implementation cannot appear in the table.
 """
 
+import bisect
 import math
 import os
 import platform
-import sys
-from datetime import date
+from pathlib import Path
 
 import numpy as np
 
 from numcompute.benchmarking import compare, format_results_table
-from numcompute.preprocessing import StandardScaler
+from numcompute.io import read_csv
+from numcompute.metrics import auc, confusion_matrix, roc_curve
 from numcompute.rank import rank
-from numcompute.utils import euclidean_distance
+from numcompute.stats import describe, histogram
+from numcompute.utils import euclidean_distance, topk_indices
+
+DATA_PATH = Path(__file__).resolve().parent.parent / "Dataset" / "Housing.csv"
+REPEATS = 10
+NUMERIC = ["price", "area", "bedrooms", "bathrooms", "stories", "parking"]
+YES_NO = ["mainroad", "guestroom", "basement", "hotwaterheating", "airconditioning", "prefarea"]
+MISSING_TEXT = ["", "na", "nan"]  # compared case-insensitively, so "NAN" counts as missing
 
 
-# ----------------------------------------------------------------------
-# Loop versions (deliberately plain Python, no NumPy vector tricks)
-# ----------------------------------------------------------------------
+def load_housing(path):
+    """Read the CSV; return the numeric columns, standardised features and the air-conditioning label.
 
-def standardise_vectorised(X):
-    """z-score every column with NumCompute's StandardScaler."""
-    return StandardScaler().fit_transform(X)
-
-
-def standardise_loop(X):
-    """z-score every column with explicit Python loops."""
-    n_rows, n_cols = X.shape
-    out = np.empty((n_rows, n_cols))
-    for j in range(n_cols):
-        total = 0.0
-        for i in range(n_rows):
-            total += X[i, j]
-        mean = total / n_rows
-        sq = 0.0
-        for i in range(n_rows):
-            sq += (X[i, j] - mean) ** 2
-        std = math.sqrt(sq / n_rows)
-        for i in range(n_rows):
-            out[i, j] = (X[i, j] - mean) / std
-    return out
-
-
-def pairwise_distance_vectorised(A, B):
-    """All-pairs Euclidean distance with NumCompute's utils."""
-    return euclidean_distance(A, B)
-
-
-def pairwise_distance_loop(A, B):
-    """All-pairs Euclidean distance with three nested loops."""
-    out = np.empty((A.shape[0], B.shape[0]))
-    for i in range(A.shape[0]):
-        for j in range(B.shape[0]):
-            s = 0.0
-            for k in range(A.shape[1]):
-                diff = A[i, k] - B[j, k]
-                s += diff * diff
-            out[i, j] = math.sqrt(s)
-    return out
-
-
-def rank_vectorised(x):
-    """Average ranks (ties share the mean rank) with NumCompute's rank."""
-    return rank(x, method="average")
-
-
-def rank_loop(x):
-    """Average ranks by comparing every pair of values (O(n^2))."""
-    n = len(x)
-    out = np.empty(n)
-    for i in range(n):
-        smaller = 0
-        equal = 0
-        for j in range(n):
-            if x[j] < x[i]:
-                smaller += 1
-            elif x[j] == x[i]:
-                equal += 1
-        out[i] = smaller + (equal + 1) / 2.0
-    return out
-
-
-# ----------------------------------------------------------------------
-# Runner
-# ----------------------------------------------------------------------
-
-def run_all(seed=0, repeats=5):
-    """Run every benchmark case and return the list of ``compare`` results.
-
-    Parameters
-    ----------
-    seed : int, default 0
-        Seed for the random test data (makes the inputs reproducible).
-    repeats : int, default 5
-        Timed runs per function (the mean is reported).
-
-    Returns
-    -------
-    list of dict
-        One ``compare()`` result per case, ready for
-        ``format_results_table``. The ``name`` is changed to say what was
-        measured and on how much data.
+    NumCompute's own reader turns blank, NA and NaN cells into NaN (numbers) or "" (text)
+    instead of a silent placeholder. Rows with any missing value are then dropped, because
+    the plain-Python loop versions are not NaN-aware.
     """
-    rng = np.random.default_rng(seed)
+    if not path.is_file():
+        raise SystemExit(f"Cannot find {path}. Put Housing.csv in the Dataset folder.")
+    numeric, _ = read_csv(path, usecols=NUMERIC)
+    text, _ = read_csv(path, usecols=YES_NO + ["furnishingstatus"], dtype=str)
 
-    X = rng.normal(size=(20_000, 5))
-    A = rng.normal(size=(150, 3))
-    B = rng.normal(size=(150, 3))
-    x = rng.integers(0, 500, size=1_500).astype(float)  # many ties
+    missing_text = np.isin(np.char.lower(np.char.strip(text)), MISSING_TEXT)
+    complete = ~np.isnan(numeric).any(axis=1) & ~missing_text.any(axis=1)
+    numeric, text = numeric[complete], text[complete]
 
-    cases = [
-        ("StandardScaler (20,000 x 5)",
-         standardise_vectorised, standardise_loop, (X,)),
-        ("euclidean_distance (150 x 150 pairs)",
-         pairwise_distance_vectorised, pairwise_distance_loop, (A, B)),
-        ("rank, average ties (1,500 values)",
-         rank_vectorised, rank_loop, (x,)),
+    yes_no = (text[:, : len(YES_NO)] == "yes").astype(float)
+    furnishing_status = text[:, len(YES_NO)]
+    categories = np.unique(furnishing_status)
+    furnishing = (furnishing_status[:, None] == categories[None, :]).astype(float)
+
+    # Every column, with text columns encoded as numbers and all columns standardised
+    # so that none dominates a distance. No two houses are identical across all columns.
+    features = np.hstack([numeric, yes_no, furnishing])
+    features = (features - features.mean(axis=0)) / features.std(axis=0)
+    has_air_conditioning = yes_no[:, YES_NO.index("airconditioning")].astype(int)
+    return numeric, features, has_air_conditioning
+
+
+def build_cases(numeric, features, has_ac):
+    """Return (label, vectorised_fn, loop_fn) triples for the loaded data."""
+    n_houses = len(numeric)
+    price = numeric[:, 0]
+    price_list = price.tolist()
+
+    # column statistics of the six numeric columns
+    columns = numeric.T.tolist()
+
+    def describe_vectorised():
+        stats = describe(numeric, axis=0)
+        return np.array([stats[key] for key in ("mean", "median", "std", "min", "max")])
+
+    def describe_loop():
+        rows = []
+        for column in columns:
+            n = len(column)
+            mean = sum(column) / n
+            ordered = sorted(column)
+            middle = n // 2
+            median = ordered[middle] if n % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+            std = math.sqrt(sum((v - mean) ** 2 for v in column) / n)
+            rows.append([mean, median, std, min(column), max(column)])
+        return np.array(rows).T
+
+    # histogram of prices
+    edges = np.linspace(price.min(), price.max(), 11).tolist()
+
+    def histogram_vectorised():
+        return histogram(price, bins=10)[0]
+
+    def histogram_loop():
+        counts = [0] * 10
+        for p in price_list:
+            counts[min(bisect.bisect_right(edges, p) - 1, 9)] += 1
+        return np.array(counts)
+
+    # average ranks of prices; many houses share a price, so there are many ties
+    def rank_vectorised():
+        return rank(price, method="average")
+
+    def rank_loop():
+        out = []
+        for p in price_list:
+            below = sum(1 for q in price_list if q < p)
+            equal = sum(1 for q in price_list if q == p)
+            out.append(below + (equal + 1) / 2)
+        return np.array(out)
+
+    # distances from 100 query houses to all the others
+    queries, database = features[:100], features[100:]
+    query_rows, database_rows = queries.tolist(), database.tolist()
+
+    def distance_vectorised():
+        return euclidean_distance(queries, database)
+
+    def distance_loop():
+        return np.array(
+            [
+                [math.sqrt(sum((x - y) ** 2 for x, y in zip(q, h))) for h in database_rows]
+                for q in query_rows
+            ]
+        )
+
+    # the 5 most similar houses for each query house
+    distances = euclidean_distance(queries, database)
+    distance_rows = distances.tolist()
+
+    def topk_vectorised():
+        return topk_indices(distances, 5, largest=False)
+
+    def topk_loop():
+        return np.array(
+            [sorted(range(len(row)), key=row.__getitem__)[:5] for row in distance_rows]
+        )
+
+    # a baseline rule: "expensive houses have air conditioning"
+    y_pred = (price > np.median(price)).astype(int)
+    true_list, pred_list = has_ac.tolist(), y_pred.tolist()
+
+    def confusion_vectorised():
+        return confusion_matrix(has_ac, y_pred)[0]
+
+    def confusion_loop():
+        counts = [[0, 0], [0, 0]]
+        for t, p in zip(true_list, pred_list):
+            counts[t][p] += 1
+        return np.array(counts)
+
+    # area under the ROC curve when price is the score for "has air conditioning"
+    positives = price[has_ac == 1].tolist()
+    negatives = price[has_ac == 0].tolist()
+
+    def auc_vectorised():
+        return auc(*roc_curve(has_ac, price)[:2])
+
+    def auc_loop():
+        wins = ties = 0
+        for p in positives:
+            for n in negatives:
+                if p > n:
+                    wins += 1
+                elif p == n:
+                    ties += 1
+        return (wins + 0.5 * ties) / (len(positives) * len(negatives))
+
+    return [
+        (f"describe, {n_houses} houses x 6 columns", describe_vectorised, describe_loop),
+        ("histogram, price in 10 bins", histogram_vectorised, histogram_loop),
+        ("rank (average), price with ties", rank_vectorised, rank_loop),
+        (f"euclidean_distance, 100 houses vs {len(database)}", distance_vectorised, distance_loop),
+        (f"topk_indices, 5 nearest of {len(database)}, per house", topk_vectorised, topk_loop),
+        (f"confusion_matrix, {n_houses} houses", confusion_vectorised, confusion_loop),
+        ("roc_curve + auc, price vs air conditioning", auc_vectorised, auc_loop),
     ]
-
-    results = []
-    for label, vec_fn, loop_fn, args in cases:
-        result = compare(vec_fn, loop_fn, *args, repeats=repeats)
-        result["name"] = label
-        results.append(result)
-    return results
-
-
-def environment_notes():
-    """Return a short multi-line description of the machine and libraries."""
-    return "\n".join([
-        f"- Date: {date.today().isoformat()}",
-        f"- Python: {sys.version.split()[0]}",
-        f"- NumPy: {np.__version__}",
-        f"- OS: {platform.platform()}",
-        f"- CPU: {platform.processor() or platform.machine()} "
-        f"({os.cpu_count()} logical cores)",
-        "- Method: mean of 5 timed runs after 1 warm-up run; fixed random seed 0",
-    ])
 
 
 def main():
-    results = run_all()
-    table = format_results_table(results)
-    notes = environment_notes()
+    numeric, features, has_ac = load_housing(DATA_PATH)
 
-    report = (
-        "# Benchmark results: vectorised vs Python loops\n\n"
-        f"{table}\n\n"
-        "## Environment\n\n"
-        f"{notes}\n"
-    )
-    print(report)
+    print(f"Data: {DATA_PATH.name}, {len(numeric)} complete houses (rows with a missing value dropped)")
+    print(f"Python {platform.python_version()}, NumPy {np.__version__}")
+    print(f"{platform.system()} {platform.release()} ({platform.machine()}), CPU cores: {os.cpu_count()}")
+    print(f"Each time is the mean of {REPEATS} runs, in seconds.\n")
 
-    out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results.md")
-    with open(out_path, "w", encoding="utf-8") as fh:
-        fh.write(report)
-    print(f"Saved to {out_path}")
+    results = []
+    for label, vectorised, loop in build_cases(numeric, features, has_ac):
+        result = compare(vectorised, loop, repeats=REPEATS)
+        result["name"] = label
+        results.append(result)
+
+    print(format_results_table(results))
 
 
 if __name__ == "__main__":
