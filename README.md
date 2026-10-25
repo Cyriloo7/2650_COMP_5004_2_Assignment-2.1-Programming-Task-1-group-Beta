@@ -215,37 +215,61 @@ Timing tools. `benchmark` times one function, `compare` times a vectorised and a
 
 ## Performance
 
-Vectorised code does the looping inside NumPy instead of in Python. The table compares NumCompute functions with plain-Python-loop versions of the same computation, run on the Housing dataset (`Dataset/Housing.csv`: 545 houses, 13 columns).
+Vectorised code does the looping inside NumPy instead of in Python. The script `benchmark/run_benchmarks.py` times three NumCompute functions against hand-written plain-Python loops that compute the same result, and reports how much faster the vectorised version is.
 
-**Measured on**
+### What is measured
 
-- Python 3.14.4 and NumPy 2.5.4
-- Linux (x86_64), 1 CPU core
-- Each time is the mean of 10 runs (after 1 warm-up run), in seconds
+| Case | Vectorised version | Loop version | Input data |
+|---|---|---|---|
+| StandardScaler (20,000 x 5) | `StandardScaler().fit_transform(X)` | Three passes over each column: mean, then standard deviation, then scaling | `X`: 20,000 × 5 random normal values |
+| euclidean_distance (150 x 150 pairs) | `euclidean_distance(A, B)` | Three nested loops: row of `A`, row of `B`, feature | `A` and `B`: 150 × 3 random normal values each |
+| rank, average ties (1,500 values) | `rank(x, method="average")` | Compares every value with every other value | `x`: 1,500 random integers from 0 to 499, so there are many ties |
+
+How the cases are run:
+
+- The data comes from `np.random.default_rng(0)`, so every run uses exactly the same inputs.
+- Each function is called once as a warm-up and then timed over 5 runs. The table shows the mean time in seconds.
+- Before reporting a speedup, `compare()` checks that both versions return the same result (same shape, and equal under `np.allclose(..., equal_nan=True)`), so a fast but wrong version cannot appear in the table.
+
+### Results
+
+The latest run, saved in `benchmark/results.md`:
 
 | Function | Vectorized (s) | Loop (s) | Speedup |
 |---|---|---|---|
-| describe, 545 houses x 6 columns | 0.0005014 | 0.0005376 | 1.07x |
-| histogram, price in 10 bins | 8.183e-05 | 6.574e-05 | 0.80x |
-| rank (average), price with ties | 5.567e-05 | 0.01213 | 217.91x |
-| euclidean_distance, 100 houses vs 445 | 0.0006939 | 0.08437 | 121.58x |
-| topk_indices, 5 nearest of 445, per house | 0.001144 | 0.004981 | 4.36x |
-| confusion_matrix, 545 houses, classes found | 9.523e-05 | 2.768e-05 | 0.29x |
-| confusion_matrix, 545 houses, labels= given | 6.249e-05 | 2.494e-05 | 0.40x |
-| roc_curve + auc, price vs air conditioning | 8.262e-05 | 0.001445 | 17.50x |
+| StandardScaler (20,000 x 5) | 0.04245 | 0.8926 | 21.03x |
+| euclidean_distance (150 x 150 pairs) | 0.003185 | 0.562 | 176.48x |
+| rank, average ties (1,500 values) | 0.002363 | 4.062 | 1719.50x |
 
-How to read it:
+**Environment**
 
-- **Speedup** is the loop time divided by the vectorised time. A value below 1x means the loop was faster.
-- The biggest gains are where the loop version compares every house with many others: ranking, pairwise distances and AUC.
-- On only 545 rows, the one-pass summaries (`describe`, `histogram`, `confusion_matrix`) are not much faster than a loop (roughly 0.3x to 2x), and `confusion_matrix` is slower, because every NumPy call has a fixed set-up cost. With about ten times as many rows (the same houses repeated), `describe` and `histogram` are already several times faster.
-- `confusion_matrix` has to find the class labels itself, which involves a sort. Passing `labels=` skips that step and is faster.
-- Every pair is checked to give the same answer before its speedup is reported, so a fast but wrong version cannot appear in the table.
+- Date: 2026-10-24
+- Python: 3.14.6
+- NumPy: 2.5.1
+- OS: Windows-11-10.0.26300-SP0
+- CPU: Intel64 Family 6 Model 158 Stepping 10, GenuineIntel (8 logical cores)
+- Method: mean of 5 timed runs after 1 warm-up run; fixed random seed 0
+
+### How to read the results
+
+- **Speedup** is the loop time divided by the vectorised time. `21.03x` means the vectorised version needed about 1/21 of the loop's time.
+- The `StandardScaler` and `euclidean_distance` loops do the same amount of work as the vectorised versions (same time complexity), so their speedups come from vectorisation alone: NumPy runs the loops in compiled code instead of the Python interpreter. The vectorised `StandardScaler` even does extra work for NaN handling and overflow safety.
+- The `rank` loop also uses a slower algorithm: it compares every pair of values (O(n²)), while `rank` sorts once (O(n log n)). Its very large speedup combines both effects.
 - Exact times differ between machines and between runs. The pattern is what matters.
+
+### Reproducing the benchmarks
+
+From the repository root:
+
+```bash
+python -m benchmark.run_benchmarks
+```
+
+The script prints the table and the environment notes, and overwrites `benchmark/results.md` with them. If you re-run it, copy the new table into this section as well, so the README and `results.md` match. The last section of the [demo notebook](#demo-notebook) runs the same cases (`run_all(seed=0, repeats=5)`) and shows the table inline.
 
 ## Demo notebook
 
-`demo/quickstart.ipynb` walks through the toolkit on a small dataset: reading a CSV with missing values, cleaning it, sorting and searching, ranking, statistics, gradients and a benchmark.
+`demo/quickstart.ipynb` walks through the toolkit on a small dataset: reading a CSV with missing values, cleaning it, sorting and searching, ranking, statistics, gradients and a benchmark. Its last section runs the same benchmark cases as `benchmark/run_benchmarks.py`.
 
 1. Install the package (see [Installation](#installation)). The notebook must use the same environment.
 2. Install Jupyter, which is only needed for the notebook: `python -m pip install notebook`
@@ -289,6 +313,10 @@ Use `python -m pytest` rather than plain `pytest`: it makes sure the tests run i
 │   ├── utils.py
 │   └── benchmarking.py
 ├── tests/                 unit tests, test_<module>.py
+├── benchmark/             vectorised vs loop benchmarks
+│   ├── __init__.py
+│   ├── run_benchmarks.py  run with: python -m benchmark.run_benchmarks
+│   └── results.md         latest results and environment notes
 ├── demo/
 │   └── quickstart.ipynb   end-to-end demo notebook
 ├── Dataset/               Housing.csv, the sample dataset
@@ -307,6 +335,7 @@ Use `python -m pytest` rather than plain `pytest`: it makes sure the tests run i
 ## Troubleshooting
 
 - **`ModuleNotFoundError: No module named 'numcompute'`** - the package is not installed in the environment you are running. From the repository root, run `python -m pip install -e ".[dev]"`.
+- **`ModuleNotFoundError: No module named 'benchmark'`** - run `python -m benchmark.run_benchmarks` from the repository root, the folder that contains `benchmark/`.
 - **`pytest: error: unrecognized arguments: --cov`** - the test tools are missing. Run `python -m pip install -e ".[dev]"`.
 - **pytest says "no tests ran"** - test files must be named `test_<name>.py` (underscore, not hyphen) and live in `tests/`.
 - **`AttributeError: module 'numpy' has no attribute 'trapezoid'`** - your NumPy is older than 2.0. Run `python -m pip install -U "numpy>=2.0"`.
