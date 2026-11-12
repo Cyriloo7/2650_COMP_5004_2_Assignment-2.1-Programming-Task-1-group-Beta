@@ -44,6 +44,7 @@ def test_plot_predictions_vs_ground_truth(tmp_path):
         vis.plot_predictions_vs_ground_truth([1, 2], [1])
 
 
+@pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive")  # show() cannot open a window under Agg
 def test_show_option_and_drift_line_in_comparisons():
     fig = vis.compare_models([0.5, 0.6], [0.6, 0.7], drift_at=1, show=True)  # show() does nothing on the Agg backend
     assert len(fig.axes[0].get_lines()) == 3  # two models + the drift line

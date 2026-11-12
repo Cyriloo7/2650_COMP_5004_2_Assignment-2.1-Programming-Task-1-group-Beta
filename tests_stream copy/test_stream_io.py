@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from numcompute.io import DEFAULT_MISSING_VALUES
 from numcompute_stream.io import iter_chunks, load_csv
 
 
@@ -52,10 +53,14 @@ def test_load_csv_errors(tmp_path):
         load_csv(tmp_path / "missing.csv")
 
 
-def test_loads_the_demo_dataset():
-    X, y, names = load_csv(Path(__file__).resolve().parents[1] / "Dataset" / "sensor_stream.csv",
-                           target_column="status")
-    assert X.shape == (8000, 5) and names[-1] == "site" and set(y) == {"normal", "warning", "fault"}
+def test_loads_the_housing_dataset():
+    path = Path(__file__).resolve().parents[1] / "Dataset" / "Housing.csv"  # the Assignment 2.1 dataset
+    X, y, names = load_csv(path, target_column="airconditioning", missing_values=(*DEFAULT_MISSING_VALUES, "NAN"))
+    assert X.shape == (544, 12) and "airconditioning" not in names  # one row has no label
+    assert set(y) == {"yes", "no"} and names[0] == "price"
+    assert np.isnan(X[:, names.index("area")].astype(float)).sum() == 1      # numeric cell missing -> NaN
+    assert set(X[:, names.index("basement")]) == {"yes", "no", ""}           # "NAN" and blank cells -> ""
+    assert load_csv(path, target_column="airconditioning")[0][:, names.index("basement")].tolist().count("NAN") == 1
 
 
 def test_iter_chunks_keeps_the_order_and_sizes():

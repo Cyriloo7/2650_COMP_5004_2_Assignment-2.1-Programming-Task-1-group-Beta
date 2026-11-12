@@ -6,16 +6,21 @@ build-backend = "setuptools.build_meta"
 name = "numcompute"
 version = "0.1.0"
 requires-python = ">=3.9"
-dependencies = ["numpy"]
+dependencies = [
+    "numpy"
+]
 
 [project.optional-dependencies]
-# matplotlib is only needed by numcompute_stream.visualise (Assignment 2.2)
-dev = ["pytest", "pytest-cov", "matplotlib"]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "matplotlib"
+]
 
 [tool.setuptools.packages.find]
-include = ["numcompute*"]
+where = ["."]
+include = ["numcompute", "numcompute.*", "numcompute_stream", "numcompute_stream.*"]
+namespaces = false
 
 [tool.pytest.ini_options]
-# Put the repository root on sys.path so tests can import numcompute_stream
-# (and numcompute) with a plain `pytest`, with or without `pip install -e .`
 pythonpath = ["."]

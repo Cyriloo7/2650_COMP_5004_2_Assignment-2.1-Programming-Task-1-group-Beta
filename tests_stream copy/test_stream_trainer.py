@@ -1,11 +1,16 @@
 """Tests for stream.py: test-then-train logging with StreamTrainer."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
+from numcompute.io import DEFAULT_MISSING_VALUES
 from numcompute.preprocessing import NotFittedError
-from numcompute_stream.io import iter_chunks
+from numcompute_stream.io import iter_chunks, load_csv
 from numcompute_stream.metrics import Accuracy
+from numcompute_stream.pipeline import Pipeline
+from numcompute_stream.preprocessing import Imputer, OneHotEncoder, StandardScaler
 from numcompute_stream.stream import StreamTrainer, model_size_kb
 from numcompute_stream.tree import DecisionTreeClassifier
 
@@ -88,3 +93,18 @@ def test_verbose_shows_the_buffer_filling_up(capsys):
     StreamTrainer(DecisionTreeClassifier(buffer_size=600), verbose=True).run(iter_chunks(X, y, 250))
     lines = capsys.readouterr().out.strip().splitlines()
     assert "buffered 250" in lines[0] and "retrained" in lines[2]  # 250, 500, then 750 >= 600 samples
+
+
+def test_housing_stream_end_to_end():
+    """The pipeline of the demo on the real data: text columns, missing values, a buffered tree."""
+    path = Path(__file__).resolve().parents[1] / "Dataset" / "Housing.csv"
+    X, y, names = load_csv(path, target_column="airconditioning", missing_values=(*DEFAULT_MISSING_VALUES, "NAN"))
+    text_names = ("mainroad", "guestroom", "basement", "hotwaterheating", "prefarea", "furnishingstatus")
+    text = [names.index(n) for n in text_names]
+    pipe = Pipeline([("encode", OneHotEncoder(columns=text, max_categories=3)), ("impute", Imputer()),
+                     ("scale", StandardScaler()), ("model", DecisionTreeClassifier(max_depth=4, buffer_size=100))])
+    trainer = StreamTrainer(pipe, window=100).run(iter_chunks(X, y, 25))
+    assert len(trainer.history) == 22 and trainer.n_samples_seen == 544
+    assert np.flatnonzero(trainer.get("retrained")).tolist() == [3, 7, 11, 15, 19]  # every 100 samples
+    assert np.isnan(trainer.get("accuracy")[:4]).all() and not np.isnan(trainer.get("accuracy")[4:]).any()
+    assert pipe.classes_.tolist() == ["no", "yes"] and pipe.predict_proba(X[:3]).shape == (3, 2)
