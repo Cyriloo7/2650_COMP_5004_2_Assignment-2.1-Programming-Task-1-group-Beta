@@ -22,8 +22,9 @@ Imputer replaces it.
 import numpy as np
 
 from numcompute import preprocessing as base               # Assignment 2.1 (reused)
-from numcompute.utils import _is_integer, safe_divide      # Assignment 2.1 (reused)
+from numcompute.utils import safe_divide                   # Assignment 2.1 (reused)
 
+from ._checks import check_int_at_least
 from .stats import update_min_max, update_moments
 
 
@@ -186,8 +187,7 @@ class OneHotEncoder(_StreamingMixin, base.OneHotEncoder):
     _state = ("n_features_in_", "categories_", "_kind", "_encoded", "_n_columns")
 
     def __init__(self, columns=None, max_categories=None, handle_unknown="ignore", dtype=np.float64):
-        if max_categories is not None and (not _is_integer(max_categories) or max_categories < 1):
-            raise ValueError(f"max_categories must be None or an integer >= 1, got {max_categories!r}.")
+        check_int_at_least("max_categories", max_categories, allow_none=True)
         super().__init__(handle_unknown=handle_unknown, dtype=dtype)
         self.columns = columns
         self.max_categories = max_categories

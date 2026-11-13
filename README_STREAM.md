@@ -21,9 +21,10 @@ numcompute_stream/                   the package (spec modules + io.py for the d
 ├── metrics.py                       Accuracy, Precision, Recall, F1, ConfusionMatrix, AUC, RollingMetric
 ├── tree.py                          DecisionTreeClassifier (buffered retraining)
 ├── pipeline.py                      Pipeline (partial_fit)
+├── _checks.py                       check_int_at_least: one rule for every integer setting
 ├── stream.py                        StreamTrainer
 └── visualise.py                     plot_metric_over_time, compare_models, plot_predictions_vs_ground_truth
-tests_stream/test_stream_*.py        8 test files, 94 tests
+tests_stream/test_stream_*.py        9 test files, 160 tests
 demo_stream/stream_demo.ipynb        the demo (already run); saved plots in demo_stream/figures/
 benchmark_stream/stream_loop_vs_vectorised.py   benchmark (a): loops vs vectorised code
 benchmark_stream/stream_buffer_size.py          benchmark (b): accuracy and retraining time vs buffer_size
@@ -145,16 +146,18 @@ Every piece below is imported from the 2.1 package `numcompute`; no 2.1 file was
 | 2.2 file | 2.1 code it reuses |
 |---|---|
 | `io.py` | `read_csv` (text and numbers), `DEFAULT_MISSING_VALUES`, `batch_iterator` |
-| `preprocessing.py` | subclasses `StandardScaler`, `MinMaxScaler`, `SimpleImputer`, `OneHotEncoder` (its `transform` and feature names); input checks, `TransformerMixin`, `NotFittedError`, `safe_divide`, `_is_integer` |
-| `stats.py` | `histogram`, `quantile`, `safe_divide`, `_is_integer`, `NotFittedError` |
-| `metrics.py` | `confusion_matrix`, `auc`, the averaging helper behind `precision` / `recall` / `f1`, `_has_nan`, `_kind_group`, `_is_integer` |
-| `tree.py` | input checks, `NotFittedError`, `safe_divide`, `_has_nan`, `_kind_group`, `_is_integer` |
+| `preprocessing.py` | subclasses `StandardScaler`, `MinMaxScaler`, `SimpleImputer`, `OneHotEncoder` (its `transform` and feature names); input checks, `TransformerMixin`, `NotFittedError`, `safe_divide` |
+| `stats.py` | `histogram`, `quantile`, `safe_divide`, `NotFittedError` |
+| `metrics.py` | `confusion_matrix`, `auc`, the averaging helper behind `precision` / `recall` / `f1`, `_has_nan`, `_kind_group` |
+| `tree.py` | input checks, `NotFittedError`, `safe_divide`, `_has_nan`, `_kind_group` |
+| `_checks.py` | `_is_integer` (the one integer rule shared by `tree`, `stats`, `metrics` and `preprocessing`) |
 | `pipeline.py` | subclasses `Pipeline` |
 | `stream.py`, `visualise.py` | `NotFittedError`; `confusion_matrix` |
 | `benchmark_stream/stream_loop_vs_vectorised.py` | `compare`, `format_results_table`; the 2.1 `StreamingStats` as a loop baseline |
 
-**No duplicated code.** An automatic check compared all 97 functions of `numcompute_stream` with the 118 functions of `numcompute`:
+**No duplicated code.** An automatic check compared all 98 functions of `numcompute_stream` with the 118 functions of `numcompute`:
 - No 2.2 function is identical or near-identical to a 2.1 function, and none duplicates another 2.2 function.
+- The one rule that was repeated in 8 places (a setting must be an integer >= 1) now lives in `_checks.py`, with one error message form everywhere.
 - There is no hand-written safe division, integer check, NaN check, CSV parsing or confusion counting; these all come from 2.1.
 
 ## Results
@@ -163,10 +166,10 @@ Every piece below is imported from the 2.1 package `numcompute`; no 2.1 file was
 
 | Function | Vectorized (s) | Loop (s) | Speedup |
 |---|---|---|---|
-| running_mean_and_variance | 0.001427 | 0.03144 | 22.04x |
-| best_split_of_a_feature | 0.000536 | 0.1003 | 187.17x |
-| tree_prediction | 0.0026 | 0.01458 | 5.61x |
-| confusion_matrix_counts | 0.008174 | 0.03186 | 3.90x |
+| running_mean_and_variance | 0.00127 | 0.02385 | 18.79x |
+| best_split_of_a_feature | 0.0003867 | 0.07165 | 185.28x |
+| tree_prediction | 0.002173 | 0.01127 | 5.19x |
+| confusion_matrix_counts | 0.006972 | 0.025 | 3.59x |
 
 Inputs: running moments 20,000 x 4 values; best split 2,000 values; tree prediction 20,000 samples (tree of depth 8, 65 leaves); confusion matrix 100,000 labels.
 Mean of 3 timed runs after 1 warm-up run; random seed 0. 2026-11-12, Python 3.12.3, NumPy 2.4.4.
@@ -179,25 +182,25 @@ Stream: Dataset/Housing.csv, 544 houses, label `airconditioning`, chunks of 25 r
 
 | buffer_size | First scored chunk | Retrains | Mean retrain time (ms) | Accuracy (chunks 12-21) | Accuracy (all scored chunks) | Training time (s) | Peak memory (KB) |
 |---|---|---|---|---|---|---|---|
-| 50 | 2 | 10 | 7.4 | 0.828 | 0.715 | 0.087 | 14 |
-| 100 | 4 | 5 | 11.5 | 0.848 | 0.730 | 0.069 | 21 |
-| 200 | 8 | 2 | 15.2 | 0.717 | 0.718 | 0.042 | 41 |
-| 300 | 12 | 1 | 20.1 | 0.873 | 0.873 | 0.031 | 60 |
+| 50 | 2 | 10 | 4.1 | 0.828 | 0.715 | 0.051 | 14 |
+| 100 | 4 | 5 | 6.5 | 0.848 | 0.730 | 0.042 | 21 |
+| 200 | 8 | 2 | 8.9 | 0.717 | 0.718 | 0.027 | 41 |
+| 300 | 12 | 1 | 12.5 | 0.873 | 0.873 | 0.023 | 60 |
 | always predict the most common label | - | - | - | 0.873 | 0.686 | - | - |
 
 **Shuffled order** (seed 0, no change over time):
 
 | buffer_size | First scored chunk | Retrains | Mean retrain time (ms) | Accuracy (chunks 12-21) | Accuracy (all scored chunks) | Training time (s) | Peak memory (KB) |
 |---|---|---|---|---|---|---|---|
-| 50 | 2 | 10 | 8.2 | 0.693 | 0.686 | 0.093 | 14 |
-| 100 | 4 | 5 | 12.2 | 0.676 | 0.685 | 0.073 | 21 |
-| 200 | 8 | 2 | 14.6 | 0.697 | 0.695 | 0.040 | 41 |
-| 300 | 12 | 1 | 19.0 | 0.779 | 0.779 | 0.030 | 60 |
+| 50 | 2 | 10 | 5.1 | 0.693 | 0.686 | 0.061 | 14 |
+| 100 | 4 | 5 | 6.8 | 0.676 | 0.685 | 0.042 | 21 |
+| 200 | 8 | 2 | 8.7 | 0.697 | 0.695 | 0.025 | 41 |
+| 300 | 12 | 1 | 12.0 | 0.779 | 0.779 | 0.021 | 60 |
 | always predict the most common label | - | - | - | 0.672 | 0.686 | - | - |
 
 - **Retraining cost:**
   - small buffers retrain more often (10 times for 50 samples, 1 time for 300);
-  - each retrain of a small buffer is quicker (7-12 ms for 50-100 samples against 20 ms for 300; timings vary a little from run to run);
+  - each retrain of a small buffer is quicker (4-6 ms for 50-100 samples against 12 ms for 300; timings vary a little from run to run);
   - the memory footprint grows with the buffer (14 KB for 50, 60 KB for 300).
 - **Delay:** a model cannot predict before its first buffer is trained, so a larger buffer starts later (chunk 12 for 300, chunk 2 for 50).
 - **Accuracy needs care.**
@@ -208,22 +211,47 @@ Stream: Dataset/Housing.csv, 544 houses, label `airconditioning`, chunks of 25 r
 
 ## Tests
 
-- **Counts**: 94 tests in `tests_stream/` cover 100% of the lines of `numcompute_stream` (99% counting branches). Together with the 627 Assignment 2.1 tests, all 721 pass, and the 2.1 coverage gate (100% of `numcompute`) still passes.
+- **Counts**: 160 tests in `tests_stream/` cover **100% of the lines and 100% of the branches** of `numcompute_stream`. Together with the 627 Assignment 2.1 tests, all 787 pass, and the 2.1 coverage gate (100% of `numcompute`) still passes.
 - **What they check**:
   - streaming results against the 2.1 batch results: every metric and every `average`, the scalers, imputer and encoder, and the running mean and variance against the 2.1 `StreamingStats`;
-  - the vectorised split search and prediction against simple loops;
-  - the tree against the course's own tree code;
-  - an end-to-end run of the demo's pipeline on `Housing.csv` (text columns, missing values, retraining every 100 samples);
+  - the vectorised split search and prediction against simple loops, and the tree against the course's own tree code;
   - buffered retraining: the buffer fills, retrains at `buffer_size`, is cleared, and `predict` uses the latest tree in between;
-  - edge cases:
-    - NaN features, labels and scores;
-    - constant and all-missing columns;
-    - ties and neighbouring floats;
-    - empty chunks and chunks bigger than the buffer;
-    - new classes or categories mid-stream;
-    - wrong shapes, text input, unfitted models and invalid settings.
-- **Bugs found by the tests and fixed**:
-  - `StreamTrainer` treated a model with no `is_fitted` attribute as ready before any training.
-  - `StandardScaler` turned a constant column of 0.1 into -1 instead of 0. Round-off left a tiny variance, so the scaler divided by almost zero. Constant columns are now detected exactly, as in 2.1.
-  - `ConfusionMatrix` changed its labels before rejecting NaN input. The check now runs first.
+  - an end-to-end run of the demo's pipeline on `Housing.csv` (text columns, missing values, retraining every 100 samples);
+  - **robustness** (`test_stream_robustness.py`):
+    - results do not depend on the chunk size (1, 7, 64 or all rows at once);
+    - the same buffered tree comes out for every chunk size that divides `buffer_size`;
+    - the buffer always stays below `buffer_size`, so memory stays bounded;
+    - a variance and a mean that are exact for values like 1e9 + 0, 1, 2, ... fed one at a time;
+    - 1e9 and 1e9 + 1 are told apart inside a column that also holds -1e18 and 1e18;
+    - values near 1e308 cannot overflow a threshold;
+    - 100,000 identical rows give one leaf quickly;
+    - ties choose the lowest feature and the lowest threshold;
+  - edge cases: NaN features, labels and scores; constant and all-missing columns; empty chunks and chunks bigger than the buffer; new classes or categories mid-stream; wrong shapes, text input, unfitted models and invalid settings.
 - **Without matplotlib**: the plotting tests are skipped if matplotlib is not installed. The 2.1 `requirements.txt` lists only NumPy.
+
+## Debugging log
+
+Each problem was found by a test or a measurement, diagnosed, fixed, and then pinned by a test that fails without the fix.
+
+| # | What went wrong | Diagnosis | Fix | Test that now guards it |
+|---|---|---|---|---|
+| 1 | The tree grew leaf by leaf, not by buffered retraining as the specification asks | Found when checking the code against the specification | Rewrote `tree.py` with the course's recursive build and a buffer | `test_partial_fit_buffers_until_buffer_size_then_retrains_and_clears` |
+| 2 | `StreamTrainer` tried to score a chunk before any model existed | A model without `is_fitted` was treated as ready | `model_ready` also needs one `fit_chunk` first | `test_models_without_a_buffer_are_logged_too` |
+| 3 | `StandardScaler` turned a constant column of 0.1 into -1 instead of 0 | Round-off left a tiny variance, and the scaler divided by almost zero | Detect constant columns exactly (min == max), as 2.1 does | `test_constant_and_all_missing_columns_match_the_2_1_scaler` |
+| 4 | `ConfusionMatrix` changed its labels before rejecting NaN input | The validation came after the state update | Validate first | `test_a_rejected_update_leaves_the_confusion_matrix_unchanged` |
+| 5 | Precision, recall and F1 repeated the 2.1 averaging logic | Found by comparing 2.2 functions with 2.1 functions | Reuse the 2.1 helper (`binary`, `macro`, `micro` now match 2.1) | `test_streaming_scores_equal_the_2_1_batch_scores` |
+| 6 | A threshold between values near +1.7e308 and -1.7e308 raised an overflow warning | `high - low` overflows, and only a later guard hid the result | Compute `low / 2 + high / 2`, and keep the guard for neighbouring floats | `test_extreme_values_cannot_overflow_the_threshold` |
+| 7 | All-equal features still paid for the cumulative class counts | Measured: 33 ms for 200,000 x 5 constant values | Skip a constant feature right after its sort (10 ms) | `test_all_equal_features_are_cheap_and_give_one_leaf` (checks the result and a generous time bound) |
+| 8 | The integer check for settings was repeated in 8 places with different messages | The duplicate audit flagged two near-identical constructors | One shared `check_int_at_least` | `test_integer_settings_are_checked_the_same_way_everywhere` |
+
+## Design decisions and known limits
+
+Every limit below is either fixed above or a deliberate choice, with the reason.
+
+- **The buffered tree forgets older data.** The specification says to retrain on the buffer and clear it. The benchmark shows the cost: a small buffer sees few samples per tree. The benefit is bounded memory and a tree that follows a changing stream.
+- **Quantiles are approximate once the stream is longer than `sample_size`.** They come from a random sample (reservoir sampling), so memory does not grow. They are exact until that many rows have been seen. Raise `sample_size` for more accuracy.
+- **`AUC` is approximate.** Scores are counted in 1,000 bins, so memory stays small. Scores in the same bin count as ties, so the error is at most about 1/1000 of the score range (a test checks it against the pairwise definition).
+- **Loops over features, never over samples.** `best_split`, the histograms and the encoder loop over the columns (a handful), and everything inside is NumPy. The recursion in `_build` is as deep as `max_depth`.
+- **The `Imputer` supports `mean` and `constant` in a stream.** `median` and `most_frequent` need all the data at once, so they raise a clear error in `partial_fit` and work with `fit`.
+- **Text columns must be encoded before the tree.** The tree rejects text and NaN with a message that names the fix (`OneHotEncoder`, `Imputer`).
+- **Floating-point limits.** Scaling a column that holds both 1e18 and values near 1e9 can hide a difference of 1, because `x - mean` loses it in float64. This is the nature of 64-bit floats, not a bug. The tree itself, used on the raw column, keeps such values apart (tested).

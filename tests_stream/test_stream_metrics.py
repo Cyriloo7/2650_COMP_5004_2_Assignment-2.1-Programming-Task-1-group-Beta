@@ -93,6 +93,14 @@ def test_nan_labels_and_scores_are_rejected():
         ConfusionMatrix().update([1, 2], [1, 2]).update(["a"], ["a"])  # labels switch from numbers to text
 
 
+def test_a_rejected_update_leaves_the_confusion_matrix_unchanged():
+    matrix = ConfusionMatrix().update([0, 1], [0, 1])
+    with pytest.raises(ValueError):
+        matrix.update([2.0, np.nan], [2.0, 0.0])  # label 2 is new, but the NaN must be rejected before any change
+    counts, labels = matrix.result()
+    assert labels.tolist() == [0, 1] and counts.sum() == 2
+
+
 def test_auc_matches_the_pairwise_definition_and_handles_ties():
     assert AUC().update([0, 0, 1, 1], [0.1, 0.4, 0.35, 0.8]).result() == pytest.approx(0.75)
     assert AUC().update([0, 1], [0.5, 0.5]).result() == pytest.approx(0.5)  # a tie counts half

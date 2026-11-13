@@ -72,3 +72,11 @@ def test_iter_chunks_keeps_the_order_and_sizes():
         list(iter_chunks(X, y, chunk_size=0))
     with pytest.raises(ValueError):
         iter_chunks(X, y[:5], chunk_size=2)
+
+
+def test_text_only_file_and_non_integer_labels(tmp_path):
+    X, y, names = load_csv(write(tmp_path, "colour,size,label\nred,big,a\nblue,small,b\n"))
+    assert X.dtype == object and X.tolist() == [["red", "big"], ["blue", "small"]]  # no numeric column at all
+    assert y.tolist() == ["a", "b"] and names == ["colour", "size"]
+    _, y, _ = load_csv(write(tmp_path, "a,target\n1,1.5\n2,2.0\n", "reg.csv"))
+    assert y.dtype == float and y.tolist() == [1.5, 2.0]  # labels that are not whole numbers stay floats

@@ -23,7 +23,8 @@ import numpy as np
 
 from numcompute.metrics import _VALID_AVERAGES, _average_ratio, _has_nan, auc, confusion_matrix  # Assignment 2.1
 from numcompute.preprocessing import _kind_group                                                  # Assignment 2.1
-from numcompute.utils import _is_integer                                                          # Assignment 2.1
+
+from ._checks import check_int_at_least
 
 
 def _check_pair(y_true, y_pred):
@@ -42,6 +43,7 @@ class ConfusionMatrix:
     columns predicted labels, in sorted label order. New labels can appear at
     any time - the matrix grows to include them. Each chunk is counted with
     the vectorised 2.1 ``confusion_matrix`` (which also rejects NaN labels).
+    Each update costs O(n + L^2) for n samples and L labels; memory O(L^2).
     """
 
     def __init__(self):
@@ -166,8 +168,7 @@ class AUC:
     """
 
     def __init__(self, pos_label=1, n_bins=1000):
-        if not _is_integer(n_bins) or n_bins < 1:
-            raise ValueError(f"n_bins must be an integer >= 1, got {n_bins!r}.")
+        check_int_at_least("n_bins", n_bins)
         self.pos_label = pos_label
         self.n_bins = n_bins
         self.reset()
@@ -212,8 +213,7 @@ class RollingMetric:
     """
 
     def __init__(self, metric, window=500):
-        if not _is_integer(window) or window < 1:
-            raise ValueError(f"window must be an integer >= 1, got {window!r}.")
+        check_int_at_least("window", window)
         self.metric = metric
         self.window = window
         self.reset()

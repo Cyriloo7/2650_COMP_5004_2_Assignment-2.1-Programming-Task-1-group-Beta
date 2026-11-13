@@ -37,7 +37,9 @@ import numpy as np
 
 from numcompute.metrics import _has_nan                                           # Assignment 2.1 (reused)
 from numcompute.preprocessing import NotFittedError, _check_numeric, _kind_group  # Assignment 2.1 (reused)
-from numcompute.utils import _is_integer, safe_divide                            # Assignment 2.1 (reused)
+from numcompute.utils import safe_divide                                          # Assignment 2.1 (reused)
+
+from ._checks import check_int_at_least
 
 
 def impurity(class_counts, criterion="gini"):
@@ -88,6 +90,15 @@ def best_split(X, y, n_classes, criterion="gini", features=None):
         ``feature`` is None when no question has a gain above 0. A threshold
         lies halfway between two neighbouring values. Ties are broken
         deterministically: the lowest threshold of the lowest feature wins.
+
+    Notes
+    -----
+    Time O(F * n log n) for F features tried: the sort dominates, and the gain
+    of all n - 1 thresholds of a feature comes from one cumulative sum. Extra
+    memory O(n * n_classes). A constant feature is skipped right after its
+    sort, so all-equal data costs little. Thresholds are computed as
+    ``low / 2 + high / 2``, which cannot overflow (``high - low`` can) and keeps
+    values such as 1e9 and 1e9 + 1 apart even in widely spread data.
     """
     n = len(y)
     parent = impurity(np.bincount(y, minlength=n_classes), criterion)
@@ -95,19 +106,19 @@ def best_split(X, y, n_classes, criterion="gini", features=None):
     for feature in range(X.shape[1]) if features is None else features:
         order = np.argsort(X[:, feature], kind="stable")
         values = X[order, feature]
+        if values[0] == values[-1]:
+            continue                                      # constant feature: nothing to ask, skip the counting below
         one_hot = np.eye(n_classes)[y[order]]             # (n, n_classes)
         left = np.cumsum(one_hot, axis=0)[:-1]            # class counts left of each cut
         right = one_hot.sum(axis=0) - left                # class counts right of each cut
         n_left = np.arange(1, n)
         gain = parent - (n_left * impurity(left, criterion) + (n - n_left) * impurity(right, criterion)) / n
         valid = values[1:] > values[:-1]                  # a cut must fall between two different values
-        if not valid.any():
-            continue                                      # constant feature: nothing to ask
-        gain = np.where(valid, gain, -np.inf)
+        gain = np.where(valid, gain, -np.inf)             # (at least one cut is valid: the feature is not constant)
         i = int(np.argmax(gain))                          # first maximum = lowest threshold
         if gain[i] > best_gain:
-            threshold = values[i] + (values[i + 1] - values[i]) / 2
-            if threshold >= values[i + 1]:                # neighbouring floats have no midpoint
+            threshold = values[i] / 2 + values[i + 1] / 2  # halving first: the sum cannot overflow
+            if not values[i] <= threshold < values[i + 1]:  # neighbouring floats have no midpoint between them
                 threshold = values[i]
             best_feature, best_threshold, best_gain = feature, threshold, gain[i]
     return best_feature, best_threshold, best_gain
@@ -166,6 +177,14 @@ class DecisionTreeClassifier:
     last_train_time_ : float or None
         Seconds taken by the latest training.
 
+    Notes
+    -----
+    Training on n buffered samples costs O(max_depth * F * n log n): every
+    level of the tree touches each sample once. Prediction sends all samples
+    down together, O(max_depth) NumPy comparisons per sample. Memory stays
+    bounded: the buffer never holds more than ``buffer_size + chunk - 1``
+    samples (it is cleared at every retrain), plus the nodes of one tree.
+
     Example
     -------
     >>> tree = DecisionTreeClassifier(max_depth=5, buffer_size=500)
@@ -177,13 +196,15 @@ class DecisionTreeClassifier:
                  buffer_size=500, random_state=None):
         if criterion not in ("gini", "entropy"):
             raise ValueError(f"criterion must be 'gini' or 'entropy', got {criterion!r}.")
-        for name, value, smallest in (("max_depth", max_depth, 1), ("min_samples_split", min_samples_split, 2),
-                                      ("buffer_size", buffer_size, 1)):
-            if not _is_integer(value) or value < smallest:
-                raise ValueError(f"{name} must be an integer >= {smallest}, got {value!r}.")
-        if not (max_features is None or max_features == "sqrt"
-                or (_is_integer(max_features) and max_features >= 1)):
-            raise ValueError(f"max_features must be None, 'sqrt' or an integer >= 1, got {max_features!r}.")
+        check_int_at_least("max_depth", max_depth, 1)
+        check_int_at_least("min_samples_split", min_samples_split, 2)
+        check_int_at_least("buffer_size", buffer_size, 1)
+        if not (max_features is None or max_features == "sqrt"):
+            try:
+                check_int_at_least("max_features", max_features, 1)
+            except ValueError:
+                raise ValueError(
+                    f"max_features must be None, 'sqrt' or an integer >= 1, got {max_features!r}.") from None
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
         self.max_features = max_features

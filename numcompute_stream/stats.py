@@ -22,7 +22,9 @@ import numpy as np
 from numcompute.preprocessing import NotFittedError         # Assignment 2.1 (reused)
 from numcompute.stats import histogram as batch_histogram  # Assignment 2.1 (reused)
 from numcompute.stats import quantile as batch_quantile    # Assignment 2.1 (reused)
-from numcompute.utils import _is_integer, safe_divide      # Assignment 2.1 (reused)
+from numcompute.utils import safe_divide                   # Assignment 2.1 (reused)
+
+from ._checks import check_int_at_least
 
 
 def update_moments(count, mean, m2, X):
@@ -34,6 +36,8 @@ def update_moments(count, mean, m2, X):
     Assignment 2.1, done for every column at once. The result does not depend
     on how the data was split into chunks, and it avoids the round-off errors
     of E[x^2] - E[x]^2. NaN values are skipped.
+
+    Time O(n * f) for a chunk of n rows and f columns; memory O(f).
     """
     valid = ~np.isnan(X)
     chunk_count = valid.sum(axis=0)
@@ -74,6 +78,12 @@ class StreamingStats:
     random_state : int or None
         Seed for the random sample.
 
+    Notes
+    -----
+    Each update costs O(n * f) for the moments and min/max, plus one histogram
+    per feature (a loop over the few features, never over samples). Memory is
+    O(f * (sample_size + bins * window)) however long the stream is.
+
     Example
     -------
     >>> stats = StreamingStats()
@@ -83,9 +93,9 @@ class StreamingStats:
     """
 
     def __init__(self, bins=10, hist_range=None, window=None, sample_size=1000, random_state=None):
-        if not (_is_integer(bins) and bins >= 1 and _is_integer(sample_size) and sample_size >= 1
-                and (window is None or (_is_integer(window) and window >= 1))):
-            raise ValueError("bins and sample_size must be integers >= 1, and window must be None or an integer >= 1.")
+        check_int_at_least("bins", bins)
+        check_int_at_least("sample_size", sample_size)
+        check_int_at_least("window", window, allow_none=True)
         self.bins = bins
         self.hist_range = hist_range
         self.window = window

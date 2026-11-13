@@ -144,3 +144,10 @@ def test_one_hot_encoder_on_numeric_categories_with_missing_values():
     encoder = OneHotEncoder().partial_fit(np.array([[1.0], [np.nan], [2.0]]))  # NaN is missing, not a category
     assert [c.tolist() for c in encoder.categories_] == [[1.0, 2.0]]
     np.testing.assert_array_equal(encoder.transform(np.array([[2.0], [np.nan]])), [[0, 1], [0, 0]])
+
+
+def test_feature_names_of_a_growing_encoder():
+    encoder = OneHotEncoder(columns=[1]).fit(np.array([[1.0, "a"], [2.0, "b"]], dtype=object))
+    assert encoder.get_feature_names_out().tolist() == ["x0", "x1_a", "x1_b"]  # default names, no unused slots
+    encoder.partial_fit(np.array([[3.0, "c"]], dtype=object))
+    assert encoder.get_feature_names_out(["price", "size"]).tolist() == ["price", "size_a", "size_b", "size_c"]

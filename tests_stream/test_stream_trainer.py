@@ -108,3 +108,11 @@ def test_housing_stream_end_to_end():
     assert np.flatnonzero(trainer.get("retrained")).tolist() == [3, 7, 11, 15, 19]  # every 100 samples
     assert np.isnan(trainer.get("accuracy")[:4]).all() and not np.isnan(trainer.get("accuracy")[4:]).any()
     assert pipe.classes_.tolist() == ["no", "yes"] and pipe.predict_proba(X[:3]).shape == (3, 2)
+
+
+def test_verbose_log_of_a_model_without_a_buffer(capsys):
+    X, y = make_data()
+    StreamTrainer(MajorityModel(), verbose=True).run(iter_chunks(X, y, 500))
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert "not scored" in lines[0] and "accuracy" in lines[1]
+    assert all("retrained" not in line and "buffered" not in line for line in lines)  # nothing to report
