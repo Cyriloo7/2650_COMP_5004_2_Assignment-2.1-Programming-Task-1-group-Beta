@@ -8,7 +8,7 @@ import pytest
 from numcompute.io import DEFAULT_MISSING_VALUES
 from numcompute.preprocessing import NotFittedError
 from numcompute_stream.io import iter_chunks, load_csv
-from numcompute_stream.metrics import Accuracy
+from numcompute_stream.metrics import AUC, Accuracy, ConfusionMatrix
 from numcompute_stream.pipeline import Pipeline
 from numcompute_stream.preprocessing import Imputer, OneHotEncoder, StandardScaler
 from numcompute_stream.stream import StreamTrainer, model_size_kb
@@ -116,3 +116,59 @@ def test_verbose_log_of_a_model_without_a_buffer(capsys):
     lines = capsys.readouterr().out.strip().splitlines()
     assert "not scored" in lines[0] and "accuracy" in lines[1]
     assert all("retrained" not in line and "buffered" not in line for line in lines)  # nothing to report
+
+
+def test_auc_is_given_probabilities_not_labels():
+    """Found in review: AUC used to receive the 0/1 predicted labels, which gives a meaningless curve."""
+    X, y = make_data()
+    X[:, 0] += np.random.default_rng(1).normal(scale=2.0, size=len(X))  # noisy, so the probabilities matter
+    trainer = StreamTrainer(DecisionTreeClassifier(max_depth=3, buffer_size=200),
+                            metrics={"accuracy": Accuracy(), "auc": AUC(pos_label=1)}, window=300)
+    trainer.run(iter_chunks(X, y, 100))
+    reference, tree = AUC(pos_label=1), DecisionTreeClassifier(max_depth=3, buffer_size=200)
+    for X_chunk, y_chunk in iter_chunks(X, y, 100):  # test-then-train by hand, with predict_proba
+        if tree.is_fitted:
+            reference.update(y_chunk, tree.predict_proba(X_chunk)[:, 1])
+        tree.partial_fit(X_chunk, y_chunk)
+    assert trainer.get("cumulative_auc")[-1] == reference.result()
+    assert 0.5 < trainer.get("rolling_auc")[-1] <= 1.0 and np.isnan(trainer.get("auc")[:2]).all()
+
+
+def test_auc_for_a_label_the_model_has_not_seen_yet_is_a_coin_toss():
+    X = np.random.default_rng(0).uniform(0, 10, size=(300, 2))
+    y = (X[:, 0] > 5).astype(int)
+    y[200:][X[200:, 1] > 5] = 2  # class 2 first appears in the last chunk
+    trainer = StreamTrainer(DecisionTreeClassifier(buffer_size=100), metrics={"auc_2": AUC(pos_label=2)})
+    trainer.run(iter_chunks(X, y, 100))
+    assert np.isnan(trainer.get("auc_2")[1])   # chunk 1 holds no class 2: AUC is undefined
+    assert trainer.get("auc_2")[2] == 0.5      # the tree had never seen class 2: every score is 0, a tie
+
+
+def test_metrics_are_checked_when_the_trainer_is_created():
+    with pytest.raises(TypeError, match="update, result and reset"):
+        StreamTrainer(DecisionTreeClassifier(), metrics={"bad": object()})
+    with pytest.raises(TypeError, match="matrix, not a number"):
+        StreamTrainer(DecisionTreeClassifier(), metrics={"cm": ConfusionMatrix()})
+    with pytest.raises(TypeError, match="predict_proba"):
+        StreamTrainer(MajorityModel(), metrics={"auc": AUC()})  # AUC needs probabilities
+
+
+def test_empty_chunks_before_the_first_data_are_not_mistaken_for_training():
+    """Found in review: one empty chunk marked the model as trained, so the next chunk was scored too early."""
+    X, y = make_data(600)
+    empty = (X[:0], y[:0])
+    trainer = StreamTrainer(MajorityModel()).run([empty, *iter_chunks(X, y, 200)])
+    assert np.isnan(trainer.get("accuracy")[:2]).all() and not np.isnan(trainer.get("accuracy")[2:]).any()
+    pipe = Pipeline([("scale", StandardScaler()), ("model", DecisionTreeClassifier(buffer_size=200))])
+    trainer = StreamTrainer(pipe).run([empty, *iter_chunks(X, y, 200), empty])
+    assert trainer.n_samples_seen == 600 and trainer.get("retrained").tolist() == [0, 1, 1, 1, 0]
+
+
+def test_verbose_log_without_metrics(capsys):
+    X, y = make_data()
+    trainer = StreamTrainer(DecisionTreeClassifier(buffer_size=500), metrics={}, verbose=True)
+    trainer.run(iter_chunks(X, y, 500))
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert len(lines) == 2 and all("not scored" not in line for line in lines)
+    assert set(trainer.history[1]) == {"chunk", "n_samples", "train_time", "memory_kb", "retrained", "n_retrains",
+                                       "retrain_time", "buffered"}

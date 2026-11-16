@@ -10,8 +10,27 @@ from numcompute.utils import _is_integer  # Assignment 2.1 (reused)
 def check_int_at_least(name, value, smallest=1, allow_none=False):
     """Return ``value`` if it is an integer >= ``smallest`` (or None when ``allow_none``); otherwise raise ValueError.
 
-    Booleans and floats such as 2.5 are rejected. The message names the setting, e.g.
-    ``"buffer_size must be an integer >= 1, got 0."``
+    Booleans and floats such as 2.5 are rejected; NumPy integers are accepted.
+
+    Parameters
+    ----------
+    name : str
+        Name of the setting, used in the error message.
+    value : object
+        The value to check.
+    smallest : int, default 1
+        Smallest allowed value.
+    allow_none : bool, default False
+        Also accept None (for optional settings such as ``window``).
+
+    Returns
+    -------
+    The unchanged ``value``.
+
+    Raises
+    ------
+    ValueError
+        Naming the setting, e.g. ``"buffer_size must be an integer >= 1, got 0."``
     """
     if allow_none and value is None:
         return value

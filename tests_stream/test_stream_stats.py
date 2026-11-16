@@ -109,3 +109,17 @@ def test_invalid_settings(params):
 def test_three_dimensional_chunks_are_rejected():
     with pytest.raises(ValueError, match="1D or 2D"):
         StreamingStats().update_stats(np.ones((2, 2, 2)))
+
+
+def test_text_and_infinity_are_rejected_and_change_nothing():
+    """Found in review: infinity gave a NaN std and median, broken histogram edges and RuntimeWarnings."""
+    stats = StreamingStats(bins=2)
+    with pytest.raises(ValueError, match="infinity at row 1, column 0"):
+        stats.update_stats([[1.0], [np.inf]])  # the 2.1 check, as in the scalers and the tree
+    with pytest.raises(TypeError, match="numeric"):
+        stats.update_stats([["a"], ["b"]])
+    assert stats.n_features_in_ is None  # the rejected chunks did not start the statistics
+    stats.update_stats(np.array([[1.0], [None], [3.0]], dtype=object))  # None in an object array is missing
+    with pytest.raises(ValueError, match="expected 1"):
+        stats.update_stats(np.empty((0, 2)))  # once started, even an empty chunk must have the right width
+    assert stats.n_samples_seen_ == 3 and stats.n_missing_[0] == 1 and stats.mean[0] == 2.0

@@ -22,7 +22,7 @@ Imputer replaces it.
 import numpy as np
 
 from numcompute import preprocessing as base               # Assignment 2.1 (reused)
-from numcompute.utils import safe_divide                   # Assignment 2.1 (reused)
+from numcompute.utils import _is_integer, safe_divide      # Assignment 2.1 (reused)
 
 from ._checks import check_int_at_least
 from .stats import update_min_max, update_moments
@@ -74,6 +74,20 @@ class StandardScaler(_StreamingMixin, base.StandardScaler):
     ``fit`` on all the data. As in 2.1, a constant column gets its exact value
     as the mean and ``scale_ = 0`` (it is not divided by zero), and a column
     with no values gets NaN statistics.
+
+    Parameters
+    ----------
+    with_mean : bool, default True
+        Subtract the running mean.
+    with_std : bool, default True
+        Divide by the running standard deviation.
+
+    Attributes
+    ----------
+    mean_, var_, scale_ : ndarray of shape (n_features,)
+        Running statistics after the latest chunk.
+    n_samples_seen_ : ndarray of shape (n_features,)
+        Non-missing values seen per feature.
     """
 
     _state = ("n_features_in_", "n_samples_seen_", "_mean", "_m2", "_min", "_max", "mean_", "var_", "scale_")
@@ -111,7 +125,21 @@ class StandardScaler(_StreamingMixin, base.StandardScaler):
 
 
 class MinMaxScaler(_StreamingMixin, base.MinMaxScaler):
-    """The 2.1 MinMaxScaler plus ``partial_fit``: a running minimum and maximum."""
+    """The 2.1 MinMaxScaler plus ``partial_fit``: a running minimum and maximum.
+
+    Parameters
+    ----------
+    feature_range : (float, float), default (0, 1)
+        Output range (low < high).
+    clip : bool, default False
+        Clip transformed values to ``feature_range`` (later chunks may fall
+        outside the range seen so far).
+
+    Attributes
+    ----------
+    min_, max_, data_range_ : ndarray of shape (n_features,)
+        Running extremes after the latest chunk.
+    """
 
     _state = ("n_features_in_", "min_", "max_", "data_range_")
 
@@ -147,6 +175,17 @@ class Imputer(_StreamingMixin, base.SimpleImputer):
     ``"constant"``. The 2.1 strategies "median" and "most_frequent" need all
     the data at once, so they work with ``fit`` only. A feature with no
     observed value yet is filled with ``fill_value``.
+
+    Parameters
+    ----------
+    strategy : {"mean", "constant", "median", "most_frequent"}, default "mean"
+    fill_value : float, default 0
+        Used by "constant", and for features with no observed value yet.
+
+    Attributes
+    ----------
+    statistics_ : ndarray of shape (n_features,)
+        The value that replaces NaN in each feature.
     """
 
     _state = ("n_features_in_", "_count", "_mean", "_m2", "statistics_")
@@ -251,6 +290,38 @@ def _new_categories(values, known):
     return in_order[~np.isin(in_order, known)]
 
 
+def _column_indices(columns, n_columns):
+    """Check the encoder's ``columns`` against a chunk with ``n_columns`` columns.
+
+    Parameters
+    ----------
+    columns : sequence of int or None
+        None means every column. Negative indices count from the end.
+    n_columns : int
+
+    Returns
+    -------
+    list of int
+        Non-negative column indices, in the order given.
+
+    Raises
+    ------
+    ValueError
+        For an index that is not an integer, is outside the chunk, or is repeated.
+    """
+    if columns is None:
+        return list(range(n_columns))
+    indices = []
+    for column in columns:  # a loop over the few chosen columns, never over samples
+        if not _is_integer(column) or not -n_columns <= column < n_columns:
+            raise ValueError(f"OneHotEncoder: columns must be integers from {-n_columns} to {n_columns - 1} "
+                             f"(X has {n_columns} columns), got {column!r}.")
+        indices.append(int(column) % n_columns)
+    if len(set(indices)) != len(indices):
+        raise ValueError(f"OneHotEncoder: columns names the same column more than once: {list(columns)}.")
+    return indices
+
+
 class OneHotEncoder(_StreamingMixin, base.OneHotEncoder):
     """The 2.1 OneHotEncoder plus ``partial_fit``: categories are added as they appear.
 
@@ -267,7 +338,9 @@ class OneHotEncoder(_StreamingMixin, base.OneHotEncoder):
     ----------
     columns : list of int or None, default None
         Columns to encode; None encodes every column. The other columns pass
-        through unchanged (as floats) and come first in the output.
+        through unchanged (as floats) and come first in the output. Checked
+        on the first chunk: integers inside X (negative counts from the end),
+        each named once.
     max_categories : int or None, default None
         None: one output column per category seen so far, so the output grows
         when a new category appears. An int k reserves exactly k columns per
@@ -302,23 +375,29 @@ class OneHotEncoder(_StreamingMixin, base.OneHotEncoder):
         if self.handle_unknown not in base._HANDLE_UNKNOWN:
             raise ValueError(f"handle_unknown must be one of {base._HANDLE_UNKNOWN}, got {self.handle_unknown!r}")
         X = base._check_2d(X, "OneHotEncoder")
-        if not hasattr(self, "categories_"):
+        first = not hasattr(self, "categories_")
+        if first:
             if len(X) == 0:
                 return self
-            self._n_columns = X.shape[1]
-            self._encoded = list(range(X.shape[1])) if self.columns is None else list(self.columns)
-            encoded = X[:, self._encoded]
-            self._kind = base._kind_group(encoded.dtype)
-            base._check_n_features(self, encoded, reset=True)  # n_features_in_ = number of encoded columns
-            self.categories_ = [encoded[:0, j] for j in range(encoded.shape[1])]  # empty, with the right dtype
-        self._check_width(X)
-        for j, column in enumerate(self._encoded):  # a loop over the encoded columns only, never over samples
-            known = self.categories_[j]
-            new = _new_categories(X[:, column], known)
+            encoded_columns = _column_indices(self.columns, X.shape[1])
+            encoded = X[:, encoded_columns]
+            kind = base._kind_group(encoded.dtype)
+            known = [encoded[:0, j] for j in range(encoded.shape[1])]  # empty, with the right dtype
+        else:
+            self._check_width(X)
+            encoded_columns, known = self._encoded, self.categories_
+        categories = []
+        for j, column in enumerate(encoded_columns):  # a loop over the encoded columns only, never over samples
+            new = _new_categories(X[:, column], known[j])
             if self.max_categories is not None:
-                new = new[:max(self.max_categories - len(known), 0)]
-            if len(new):  # added at the end, so older categories keep their columns
-                self.categories_[j] = np.concatenate([known, new])  # widens text dtypes, e.g. <U4 -> <U5
+                new = new[:max(self.max_categories - len(known[j]), 0)]
+            # added at the end, so older categories keep their columns; concatenate widens text, e.g. <U4 -> <U5
+            categories.append(np.concatenate([known[j], new]) if len(new) else known[j])
+        # Every column has been checked: only now is the state updated.
+        if first:
+            base._check_n_features(self, encoded, reset=True)  # n_features_in_ = encoded columns (raises if none)
+            self._n_columns, self._encoded, self._kind = X.shape[1], encoded_columns, kind
+        self.categories_ = categories
         return self
 
     def transform(self, X):
@@ -348,7 +427,19 @@ class OneHotEncoder(_StreamingMixin, base.OneHotEncoder):
         return np.hstack([numbers, encoded])
 
     def get_feature_names_out(self, input_features=None):
-        """Names of the output columns, in order (2.1 naming: "<column>_<category>")."""
+        """Names of the output columns, in order (2.1 naming: "<column>_<category>").
+
+        Parameters
+        ----------
+        input_features : sequence of str, optional
+            One name per input column (default ``"x0", "x1", ...``).
+
+        Returns
+        -------
+        ndarray of str, shape (n_output_columns,)
+            Pass-through names first, then one name per category; with
+            ``max_categories`` the unused slots are named ``"<column>_<unused>"``.
+        """
         base._check_fitted(self, "categories_")
         names = [f"x{j}" for j in range(self._n_columns)] if input_features is None else list(input_features)
         if len(names) != self._n_columns:
@@ -363,5 +454,6 @@ class OneHotEncoder(_StreamingMixin, base.OneHotEncoder):
         return np.asarray(out, dtype=str)
 
     def _check_width(self, X):
+        """X must have as many columns as the first chunk."""
         if X.shape[1] != self._n_columns:
             raise ValueError(f"X has {X.shape[1]} columns, but OneHotEncoder was fitted with {self._n_columns} columns")

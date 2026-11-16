@@ -136,6 +136,28 @@ def test_rolling_metric_only_uses_the_last_window():
             RollingMetric(Accuracy(), window=window)
 
 
+def test_a_rejected_update_leaves_the_rolling_window_unchanged():
+    """Found in review: a NaN label entered the window, so result() failed until it left; text replaced numbers."""
+    rolling = RollingMetric(Accuracy(), window=4).update([1, 0], [1, 1])
+    with pytest.raises(ValueError, match="NaN"):
+        rolling.update([np.nan], [1.0])  # checked by the wrapped metric before it is stored
+    with pytest.raises(ValueError, match="text or all be numbers"):
+        rolling.update(["a"], ["a"])  # concatenating would silently turn every stored label into text
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        RollingMetric(AUC()).update([0, 1], [0.5, 2.0])  # the wrapped AUC's own check
+    rolling.update([], [])  # an empty chunk changes nothing
+    assert rolling.y_true.tolist() == [1, 0] and rolling.result() == 0.5
+
+
+def test_only_auc_needs_scores_and_rolling_metrics_say_what_they_wrap():
+    assert AUC.needs_scores and not any(m.needs_scores for m in (Accuracy(), Precision(), Recall(), F1()))
+    rolling_auc = RollingMetric(AUC(pos_label="yes"), window=3)
+    assert rolling_auc.needs_scores and rolling_auc.pos_label == "yes"
+    assert not RollingMetric(F1()).needs_scores and RollingMetric(Accuracy()).pos_label is None
+    rolling_auc.update(["no", "yes", "no", "yes"], [0.9, 0.2, 0.1, 0.8])  # the window drops ("no", 0.9)
+    assert rolling_auc.result() == pytest.approx(1.0)  # kept: yes 0.2, no 0.1, yes 0.8 -> both "yes" outrank the "no"
+
+
 def test_empty_chunks_change_nothing():
     matrix, labels = ConfusionMatrix().update([], []).result()
     assert matrix.shape == (0, 0) and len(labels) == 0

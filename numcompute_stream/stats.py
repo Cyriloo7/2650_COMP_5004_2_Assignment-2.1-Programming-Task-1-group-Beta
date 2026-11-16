@@ -8,10 +8,11 @@
   (reservoir sampling), so they are exact until that many rows have been seen;
 * a histogram - fixed bins, optionally over the last ``window`` chunks only.
 
-NaN values are ignored and counted as missing. This is the vectorised,
-chunk-wise version of the Assignment 2.1 ``numcompute.stats.StreamingStats``
-(which adds one value at a time); the 2.1 ``histogram`` and ``quantile``
-functions and ``safe_divide`` are reused, not changed.
+NaN values are ignored and counted as missing; text and infinity are rejected
+with the 2.1 input check. This is the vectorised, chunk-wise version of the
+Assignment 2.1 ``numcompute.stats.StreamingStats`` (which adds one value at a
+time); the 2.1 ``histogram`` and ``quantile`` functions and ``safe_divide``
+are reused, not changed.
 """
 
 import warnings
@@ -19,10 +20,10 @@ from collections import deque
 
 import numpy as np
 
-from numcompute.preprocessing import NotFittedError         # Assignment 2.1 (reused)
-from numcompute.stats import histogram as batch_histogram  # Assignment 2.1 (reused)
-from numcompute.stats import quantile as batch_quantile    # Assignment 2.1 (reused)
-from numcompute.utils import safe_divide                   # Assignment 2.1 (reused)
+from numcompute.preprocessing import NotFittedError, _check_numeric  # Assignment 2.1 (reused)
+from numcompute.stats import histogram as batch_histogram           # Assignment 2.1 (reused)
+from numcompute.stats import quantile as batch_quantile             # Assignment 2.1 (reused)
+from numcompute.utils import safe_divide                            # Assignment 2.1 (reused)
 
 from ._checks import check_int_at_least
 
@@ -37,6 +38,20 @@ def update_moments(count, mean, m2, X):
     on how the data was split into chunks, and it avoids the round-off errors
     of E[x^2] - E[x]^2. NaN values are skipped.
 
+    Parameters
+    ----------
+    count, mean, m2 : ndarray of shape (n_features,)
+        The running state (start from zeros).
+    X : ndarray of shape (n_samples, n_features)
+        The chunk; NaN marks a missing value.
+
+    Returns
+    -------
+    (count, mean, m2) : tuple of ndarray of shape (n_features,)
+        The new state (the inputs are not modified).
+
+    Notes
+    -----
     Time O(n * f) for a chunk of n rows and f columns; memory O(f).
     """
     valid = ~np.isnan(X)
@@ -57,6 +72,17 @@ def update_min_max(minimum, maximum, X):
     Start both from arrays of NaN: ``np.fmin`` / ``np.fmax`` skip NaN, so a
     column with no values yet stays NaN. Used by StreamingStats, StandardScaler
     (to spot constant columns exactly) and MinMaxScaler.
+
+    Parameters
+    ----------
+    minimum, maximum : ndarray of shape (n_features,)
+        The running extremes (NaN where no value has been seen).
+    X : ndarray of shape (n_samples, n_features)
+        The chunk (n_samples >= 1); NaN values are skipped.
+
+    Returns
+    -------
+    (minimum, maximum) : tuple of ndarray of shape (n_features,)
     """
     return np.fmin(minimum, np.fmin.reduce(X, axis=0)), np.fmax(maximum, np.fmax.reduce(X, axis=0))
 
@@ -104,18 +130,39 @@ class StreamingStats:
         self.n_features_in_ = None
 
     def update_stats(self, X_chunk):
-        """Add one chunk of shape (n_samples, n_features). A 1D chunk is one feature."""
-        X = np.asarray(X_chunk, dtype=float)
+        """Add one chunk to every running statistic.
+
+        Parameters
+        ----------
+        X_chunk : array-like of shape (n_samples, n_features) or (n_samples,)
+            Numbers; NaN marks a missing value. A 1-D chunk is one feature.
+            The first non-empty chunk fixes ``n_features``; an empty chunk
+            changes nothing.
+
+        Returns
+        -------
+        self
+
+        Raises
+        ------
+        TypeError
+            If the chunk holds text (encode text columns first).
+        ValueError
+            If the chunk is not 1-D or 2-D, holds infinity, or has the wrong
+            number of features. Nothing changes when a chunk is rejected.
+        """
+        X = np.asarray(X_chunk)
         if X.ndim == 1:
             X = X.reshape(-1, 1)
         if X.ndim != 2:
             raise ValueError(f"X_chunk must be 1D or 2D, got shape {X.shape}.")
+        X = _check_numeric(X, "StreamingStats")  # 2.1 check: numbers only, no infinity (NaN = missing)
+        if self.n_features_in_ is not None and X.shape[1] != self.n_features_in_:
+            raise ValueError(f"X_chunk has {X.shape[1]} features, expected {self.n_features_in_}.")
         if len(X) == 0:
             return self
         if self.n_features_in_ is None:
-            self._start(X)
-        if X.shape[1] != self.n_features_in_:
-            raise ValueError(f"X_chunk has {X.shape[1]} features, expected {self.n_features_in_}.")
+            self._start(X)  # the first non-empty chunk fixes the number of features
 
         self.count_, self.mean_, self._m2 = update_moments(self.count_, self.mean_, self._m2, X)
         self.min_, self.max_ = update_min_max(self.min_, self.max_, X)
@@ -169,20 +216,23 @@ class StreamingStats:
         self._recent_counts.append(counts)
 
     def _check_started(self):
+        """Raise NotFittedError if no chunk has been added yet."""
         if self.n_features_in_ is None:
             raise NotFittedError("StreamingStats has no data yet: call update_stats first.")
 
     @property
     def mean(self):
+        """Mean of each feature, ndarray of shape (n_features,) (NaN for a feature with no value yet)."""
         self._check_started()
         return np.where(self.count_ > 0, self.mean_, np.nan)
 
     @property
     def var(self):
-        """Population variance (divides by n), like the 2.1 StreamingStats.
+        """Population variance (divides by n) of each feature, like the 2.1 StreamingStats.
 
-        A constant column has a variance of exactly 0 (round-off in the running
-        mean could otherwise leave a tiny positive number).
+        Returns an ndarray of shape (n_features,). A constant column has a
+        variance of exactly 0 (round-off in the running mean could otherwise
+        leave a tiny positive number).
         """
         self._check_started()
         variance = np.where(self.min_ == self.max_, 0.0, safe_divide(self._m2, self.count_))
@@ -190,20 +240,32 @@ class StreamingStats:
 
     @property
     def std(self):
+        """Population standard deviation of each feature, ndarray of shape (n_features,)."""
         return np.sqrt(self.var)
 
     @property
     def min(self):
+        """Exact minimum of each feature, ndarray of shape (n_features,)."""
         self._check_started()
         return self.min_.copy()
 
     @property
     def max(self):
+        """Exact maximum of each feature, ndarray of shape (n_features,)."""
         self._check_started()
         return self.max_.copy()
 
     def quantile(self, q):
-        """Quantile(s) q in [0, 1] per feature (exact until ``sample_size`` rows have been seen)."""
+        """Quantile(s) of each feature (exact until ``sample_size`` rows have been seen).
+
+        Parameters
+        ----------
+        q : float or array-like of float in [0, 1]
+
+        Returns
+        -------
+        ndarray of shape (n_features,), or (len(q), n_features) for several q
+        """
         self._check_started()
         sample = self._sample[:min(self.n_samples_seen_, self.sample_size)]
         with warnings.catch_warnings():
@@ -211,15 +273,19 @@ class StreamingStats:
             return batch_quantile(sample, q, axis=0)
 
     def histogram(self):
-        """Return (counts, edges), each with one row per feature.
+        """Histogram of each feature (only the last ``window`` chunks when ``window`` is set).
 
-        With ``window`` set, only the last ``window`` chunks are counted.
+        Returns
+        -------
+        counts : ndarray of shape (n_features, bins)
+        edges : ndarray of shape (n_features, bins + 1)
+            Fixed by the first chunk (or by ``hist_range``).
         """
         self._check_started()
         counts = sum(self._recent_counts) if self.window else self._total_counts
         return counts.copy(), self.edges_.copy()
 
     def summary(self):
-        """Dictionary of the main statistics (one value per feature)."""
+        """Main statistics: dict with keys count, missing, mean, std, min, median and max (one value per feature)."""
         return {"count": self.count_.astype(int), "missing": self.n_missing_.copy(), "mean": self.mean,
                 "std": self.std, "min": self.min, "median": self.quantile(0.5), "max": self.max}

@@ -18,6 +18,17 @@ class Pipeline(BasePipeline):
     transforms the chunk for the next step ("update, then transform"), so a
     chunk is always transformed with statistics that already include it.
 
+    Parameters
+    ----------
+    steps : list of (str, object)
+        Transformers with ``partial_fit`` and ``transform``, then a model with
+        ``partial_fit`` and ``predict``. Names must be unique (2.1 checks).
+
+    Raises
+    ------
+    TypeError
+        If a step has no ``partial_fit`` method (e.g. a 2.1 batch-only scaler).
+
     Example (from the specification)
     --------------------------------
     >>> pipe = Pipeline([
@@ -35,7 +46,28 @@ class Pipeline(BasePipeline):
                                 "so the pipeline cannot learn from a stream.")
 
     def partial_fit(self, X, y=None):
-        """Update every step with one chunk."""
+        """Update every step with one chunk: each transformer updates, then transforms it for the next step.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            One chunk of raw features (text or NaN are fine if a step handles them).
+        y : array-like of shape (n_samples,), optional
+            Labels of the chunk, passed to every step.
+
+        Returns
+        -------
+        self
+
+        Notes
+        -----
+        An empty chunk is skipped: it holds nothing to learn, and a
+        transformer that has not seen any data yet could not transform it.
+        """
+        if hasattr(X, "__len__") and len(X) == 0:
+            if y is not None and len(y) != 0:
+                raise ValueError(f"X has 0 rows but y has {len(y)} labels.")
+            return self
         for _, transformer in self.steps[:-1]:
             transformer.partial_fit(X, y)
             X = transformer.transform(X)
@@ -43,12 +75,24 @@ class Pipeline(BasePipeline):
         return self
 
     def predict_proba(self, X):
-        """Class probabilities from the last step, after the transformers."""
+        """Class probabilities from the last step, after the transformers.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Raw features, as given to ``partial_fit``.
+
+        Returns
+        -------
+        ndarray of shape (n_samples, n_classes)
+            Columns follow ``classes_``.
+        """
         last = self._last("predict_proba", "predict_proba")
         return last.predict_proba(self._transform_until_last(X))
 
     @property
     def classes_(self):
+        """Labels known to the last step, sorted (ndarray of shape (n_classes,))."""
         return self.steps[-1][1].classes_
 
     @property

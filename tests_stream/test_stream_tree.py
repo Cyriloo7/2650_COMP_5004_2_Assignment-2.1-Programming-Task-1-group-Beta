@@ -203,23 +203,86 @@ def test_probabilities_sum_to_one_and_ties_are_deterministic():
 
 def test_empty_chunks_and_bad_input():
     tree = DecisionTreeClassifier(buffer_size=10)
-    tree.partial_fit(np.empty((0, 2)), np.empty(0))  # an empty chunk changes nothing
-    assert not tree.is_fitted and tree.n_buffered_ == 0
+    tree.partial_fit(np.empty((0, 3)), np.empty(0))  # an empty chunk changes nothing, not even the width
+    assert not tree.is_fitted and tree.n_buffered_ == 0 and tree.n_features_in_ is None
+    tree.partial_fit([[1.0, 2.0]], [0])  # the first non-empty chunk fixes the number of features
+    assert tree.n_features_in_ == 2
     with pytest.raises(ValueError, match="Imputer"):
         tree.partial_fit([[np.nan, 1.0]], [0])
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="3 features"):
         tree.partial_fit([[1.0, 2.0, 3.0]], [0])  # 3 features after a chunk with 2
+    with pytest.raises(ValueError):
+        tree.partial_fit(np.empty((0, 3)), np.empty(0))  # from now on even an empty chunk must match
     with pytest.raises(ValueError):
         tree.partial_fit([[1.0, 2.0]], [0, 1])  # X and y lengths differ
     with pytest.raises(ValueError):
         tree.partial_fit([[1.0, 2.0]], [np.nan])  # a missing label
     with pytest.raises(TypeError):
         tree.partial_fit([["a", "b"]], [0])  # text features must be encoded first
-    tree.partial_fit([[1.0, 2.0]], [0])
     with pytest.raises(ValueError):
         tree.partial_fit([[1.0, 2.0]], ["zero"])  # labels switch from numbers to text
+    with pytest.raises(ValueError, match="mix"):
+        tree.partial_fit([[1.0, 2.0], [3.0, 4.0]], np.array(["a", 1], dtype=object))  # text and numbers at once
+    assert tree.n_buffered_ == 1 and tree.classes_.tolist() == [0]  # none of the rejected chunks got in
     with pytest.raises(ValueError):
         DecisionTreeClassifier().fit(np.empty((0, 2)), np.empty(0))
+
+
+def test_a_rejected_call_leaves_the_tree_unchanged():
+    """Found in review: a failed fit used to forget n_features_in_, so predict then accepted any width."""
+    X, y = rule_data(300)
+    tree = DecisionTreeClassifier(buffer_size=500).fit(X, y)
+    before = tree.predict(X)
+    with pytest.raises(ValueError):
+        tree.fit(np.full((5, 2), np.nan), np.zeros(5))  # rejected: NaN features (and another width)
+    with pytest.raises(ValueError):
+        tree.partial_fit(X[:5], y[:5], classes=["text"])  # rejected: text classes after number labels
+    assert tree.n_features_in_ == 3 and tree.classes_.tolist() == [0, 1] and tree.n_buffered_ == 0
+    np.testing.assert_array_equal(tree.predict(X), before)
+    with pytest.raises(ValueError, match="using 3 features"):
+        tree.predict(X[:, :2])  # the shape check still knows the trained width
+    fresh = DecisionTreeClassifier()
+    with pytest.raises(ValueError):
+        fresh.partial_fit([[1.0, 2.0]], [0, 1])  # rejected: X and y lengths differ
+    assert fresh.n_features_in_ is None and fresh.classes_ is None
+    assert fresh.partial_fit([[1.0, 2.0, 3.0]], [0]).n_features_in_ == 3  # so a valid chunk is still accepted
+
+
+def test_feature_importances_point_to_the_features_that_decide_the_class():
+    X, y = rule_data()  # the class depends on x0 and x1; x2 is noise
+    importances = DecisionTreeClassifier(max_depth=2).fit(X, y).feature_importances_
+    assert importances.shape == (3,) and importances.sum() == pytest.approx(1.0)
+    assert importances[0] > 0.3 and importances[1] > 0.3 and importances[2] == 0.0
+    single_leaf = DecisionTreeClassifier().fit(X, np.zeros(len(X), dtype=int))
+    np.testing.assert_array_equal(single_leaf.feature_importances_, [0.0, 0.0, 0.0])  # nothing was split
+
+
+def test_feature_importances_follow_the_latest_retrain():
+    X = np.random.default_rng(2).uniform(0, 10, size=(400, 2))
+    first = (X[:200, 0] > 5).astype(int)   # the first buffer depends on x0 only
+    second = (X[200:, 1] > 5).astype(int)  # the second on x1 only
+    tree = DecisionTreeClassifier(max_depth=1, buffer_size=200).partial_fit(X[:200], first)
+    np.testing.assert_allclose(tree.feature_importances_, [1.0, 0.0])
+    tree.partial_fit(X[200:], second)
+    np.testing.assert_allclose(tree.feature_importances_, [0.0, 1.0])
+
+
+def test_export_text_shows_the_learned_rules():
+    X = np.array([[1.0], [2.0], [3.0], [10.0], [11.0], [12.0]])
+    tree = DecisionTreeClassifier().fit(X, ["small", "small", "small", "big", "big", "big"])
+    assert tree.export_text(["size"]).splitlines() == [
+        "|--- size <= 6.5",
+        "|   |--- class: small  (n=3, 100% small)",
+        "|--- size >  6.5",
+        "|   |--- class: big  (n=3, 100% big)",
+    ]
+    assert tree.export_text().startswith("|--- x0 <= 6.5")  # default feature names
+    with pytest.raises(ValueError):
+        tree.export_text(["size", "colour"])  # one name per feature
+    with pytest.raises(ValueError):
+        tree.export_text(decimals=0)
+    with pytest.raises(NotFittedError, match="0 of 500"):
+        DecisionTreeClassifier().export_text()
 
 
 @pytest.mark.parametrize("params", [{"criterion": "mse"}, {"max_depth": 0}, {"min_samples_split": 1},

@@ -67,6 +67,20 @@ def test_reuses_the_2_1_pipeline():
     assert np.mean(pipe.predict(X) == y) > 0.9
 
 
+def test_empty_chunks_are_skipped_even_before_the_first_data():
+    """Found in review: an empty first chunk crashed, because the scaler could not transform before any data."""
+    X, y = make_data(600)
+    with_empty = Pipeline([("scale", StandardScaler()), ("tree", DecisionTreeClassifier(buffer_size=200))])
+    without = Pipeline([("scale", StandardScaler()), ("tree", DecisionTreeClassifier(buffer_size=200))])
+    with_empty.partial_fit(np.empty((0, 3)), np.empty(0))
+    for rows in np.array_split(np.arange(600), 3):
+        with_empty.partial_fit(X[rows], y[rows]).partial_fit(X[:0], y[:0])  # empty chunks before, between, after
+        without.partial_fit(X[rows], y[rows])
+    np.testing.assert_array_equal(with_empty.predict(X), without.predict(X))
+    with pytest.raises(ValueError, match="0 rows"):
+        with_empty.partial_fit(X[:0], y[:5])  # X is empty but y is not
+
+
 def test_invalid_steps_are_rejected():
     with pytest.raises(ValueError):
         Pipeline([])

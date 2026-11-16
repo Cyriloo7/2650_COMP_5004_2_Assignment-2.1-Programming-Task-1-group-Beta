@@ -37,6 +37,18 @@ def test_custom_delimiter_and_target_column_by_name(tmp_path):
     np.testing.assert_array_equal(X, [[2, 3], [4, 5]])
 
 
+@pytest.mark.parametrize("bad", [3, -4, 10, 1.0, True])
+def test_target_column_outside_the_file_is_an_error(tmp_path, bad):
+    """Found in review: target_column=3 on a 3-column file used to wrap around and silently pick column 0."""
+    with pytest.raises(ValueError, match="integer from -3 to 2"):
+        load_csv(write(tmp_path, "a,b,y\n1,2,0\n3,4,1\n"), target_column=bad)
+
+
+def test_negative_target_column_counts_from_the_end(tmp_path):
+    path = write(tmp_path, "a,b,y\n1,2,0\n3,4,1\n")
+    assert load_csv(path, target_column=-3)[2] == ["b", "y"] and load_csv(path, target_column=2)[2] == ["a", "b"]
+
+
 def test_rows_without_a_label_are_dropped(tmp_path):
     X, y, _ = load_csv(write(tmp_path, "a,y\n1,0\n2,\n3,1\n"))
     assert len(X) == len(y) == 2

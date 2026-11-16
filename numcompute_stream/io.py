@@ -13,7 +13,7 @@ is first read as text to find out which columns hold numbers:
 import numpy as np
 
 from numcompute.io import DEFAULT_MISSING_VALUES, read_csv  # Assignment 2.1 (reused)
-from numcompute.utils import batch_iterator                 # Assignment 2.1 (reused)
+from numcompute.utils import _is_integer, batch_iterator    # Assignment 2.1 (reused)
 
 
 def _is_numeric(column):
@@ -23,6 +23,22 @@ def _is_numeric(column):
     except ValueError:
         return False
     return True
+
+
+def _target_index(target_column, header):
+    """Position of the label column, from its name or its index (negative counts from the end).
+
+    An index outside the header is an error rather than being wrapped around,
+    so a typo can never silently pick another column as the label.
+    """
+    if isinstance(target_column, str):
+        if target_column not in header:
+            raise ValueError(f"target_column {target_column!r} not found; the columns are {header}.")
+        return header.index(target_column)
+    if not _is_integer(target_column) or not -len(header) <= target_column < len(header):
+        raise ValueError(f"target_column must be a column name or an integer from {-len(header)} to "
+                         f"{len(header) - 1} (the file has {len(header)} columns), got {target_column!r}.")
+    return target_column % len(header)
 
 
 def load_csv(path, delimiter=",", target_column=-1, missing_values=DEFAULT_MISSING_VALUES):
@@ -48,16 +64,21 @@ def load_csv(path, delimiter=",", target_column=-1, missing_values=DEFAULT_MISSI
         Integer labels if the labels are whole numbers, otherwise strings.
         Rows with a missing label are dropped.
     feature_names : list of str
+        Header names of the columns of X (the label column removed).
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file does not exist.
+    ValueError
+        If the file has no data rows, a malformed row (the 2.1 reader names
+        the line), or ``target_column`` is not a column name or an index
+        inside the header.
     """
     table, header = read_csv(path, delimiter=delimiter, missing_values=missing_values, dtype=str)
     if len(table) == 0:
         raise ValueError(f"{path} has a header row but no data rows.")
-    if isinstance(target_column, str):
-        if target_column not in header:
-            raise ValueError(f"target_column {target_column!r} not found; the columns are {header}.")
-        target = header.index(target_column)
-    else:
-        target = target_column % len(header)
+    target = _target_index(target_column, header)
 
     columns = [table[:, j].astype(object) for j in range(len(header))]  # text columns as Python strings
     numeric = [j for j in range(len(header)) if _is_numeric(table[:, j])]
@@ -91,6 +112,24 @@ def iter_chunks(X, y, chunk_size):
     shuffling would hide any change (drift) in the data over time. The chunks
     come from the Assignment 2.1 helper ``numcompute.utils.batch_iterator``,
     which also checks ``chunk_size``.
+
+    Parameters
+    ----------
+    X : array-like of shape (n_samples, n_features)
+    y : array-like of shape (n_samples,)
+    chunk_size : int
+        Rows per chunk (>= 1).
+
+    Returns
+    -------
+    iterator of (ndarray of shape (chunk, n_features), ndarray of shape (chunk,))
+        Views of consecutive rows; every row appears exactly once.
+
+    Raises
+    ------
+    ValueError
+        If X and y have different lengths (at once), or ``chunk_size`` is not
+        a positive integer (when iteration starts).
     """
     if len(X) != len(y):
         raise ValueError(f"X has {len(X)} rows but y has {len(y)} labels.")

@@ -182,3 +182,27 @@ def test_a_column_mixing_text_and_numbers_is_rejected_like_in_2_1():
         OneHotEncoder().partial_fit(mixed)
     with pytest.raises(TypeError, match="incomparable"):
         base21.OneHotEncoder().fit(mixed)  # the 2.1 encoder behaves the same way
+
+
+def test_a_chunk_rejected_part_way_leaves_the_encoder_unchanged():
+    """Found in review: the columns before a bad one were already updated, and a bad first chunk left it 'fitted'."""
+    encoder = OneHotEncoder()
+    with pytest.raises(TypeError, match="incomparable"):
+        encoder.partial_fit(np.array([["a", "x"], [1, "y"]], dtype=object))  # column 0 mixes text and numbers
+    assert not hasattr(encoder, "categories_") and not hasattr(encoder, "n_features_in_")  # not half fitted
+    encoder.partial_fit(np.array([["a", "x"]], dtype=object))
+    with pytest.raises(TypeError, match="incomparable"):
+        encoder.partial_fit(np.array([["b", "z"], ["c", 5]], dtype=object))  # column 1 is bad, column 0 is fine
+    assert [c.tolist() for c in encoder.categories_] == [["a"], ["x"]]  # column 0 did not learn "b" or "c"
+
+
+def test_encoder_columns_are_checked_before_anything_is_learned():
+    """Found in review: a repeated column was encoded twice and a negative index broke the pass-through columns."""
+    X = np.array([[1.0, "a"], [2.0, "b"]], dtype=object)
+    for columns, message in (([5], "integers from -2 to 1"), ([1.0], "integers from"), ([1, -1], "more than once")):
+        encoder = OneHotEncoder(columns=columns)
+        with pytest.raises(ValueError, match=message):
+            encoder.partial_fit(X)
+        assert not hasattr(encoder, "categories_")  # nothing was learned from the rejected chunk
+    np.testing.assert_array_equal(OneHotEncoder(columns=[-1]).fit(X).transform(X),  # -1 = the last column
+                                  OneHotEncoder(columns=[1]).fit(X).transform(X))
