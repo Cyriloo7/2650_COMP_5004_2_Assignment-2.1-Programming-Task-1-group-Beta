@@ -51,7 +51,17 @@ class _StreamingMixin:
             self.__dict__.pop(name, None)
 
     def fit(self, X, y=None):
-        """Forget what was learned and learn from X."""
+        """Forget what was learned and learn from X.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+        y : ignored
+
+        Returns
+        -------
+        self
+        """
         self._reset()
         return self.partial_fit(X, y)
 
@@ -69,6 +79,18 @@ class StandardScaler(_StreamingMixin, base.StandardScaler):
     _state = ("n_features_in_", "n_samples_seen_", "_mean", "_m2", "_min", "_max", "mean_", "var_", "scale_")
 
     def partial_fit(self, X, y=None):
+        """Update the running mean and variance with one chunk.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            NaN values are skipped. The first non-empty chunk fixes ``n_features``.
+        y : ignored
+
+        Returns
+        -------
+        self
+        """
         X = _check_chunk(self, X)
         if len(X) == 0:
             return self
@@ -94,6 +116,18 @@ class MinMaxScaler(_StreamingMixin, base.MinMaxScaler):
     _state = ("n_features_in_", "min_", "max_", "data_range_")
 
     def partial_fit(self, X, y=None):
+        """Update the running minimum and maximum with one chunk.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            NaN values are skipped. The first non-empty chunk fixes ``n_features``.
+        y : ignored
+
+        Returns
+        -------
+        self
+        """
         self._range()  # 2.1 check of feature_range
         X = _check_chunk(self, X)
         if len(X) == 0:
@@ -118,6 +152,18 @@ class Imputer(_StreamingMixin, base.SimpleImputer):
     _state = ("n_features_in_", "_count", "_mean", "_m2", "statistics_")
 
     def partial_fit(self, X, y=None):
+        """Update the fill values with one chunk.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Missing values are NaN. The first non-empty chunk fixes ``n_features``.
+        y : ignored
+
+        Returns
+        -------
+        self
+        """
         if self.strategy not in ("mean", "constant"):
             raise ValueError(f"partial_fit supports strategy 'mean' or 'constant', got {self.strategy!r} "
                              "(use fit for the 2.1 batch strategies).")
@@ -140,7 +186,18 @@ class Imputer(_StreamingMixin, base.SimpleImputer):
         return self
 
     def fit(self, X, y=None):
-        """Learn from X: streaming strategies restart ``partial_fit``; the others use the 2.1 batch fit."""
+        """Learn from X: streaming strategies restart ``partial_fit``; the others use the 2.1 batch fit.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Missing values are NaN.
+        y : ignored
+
+        Returns
+        -------
+        self
+        """
         if self.strategy in ("mean", "constant"):
             return super().fit(X, y)
         self._reset()
@@ -148,13 +205,50 @@ class Imputer(_StreamingMixin, base.SimpleImputer):
 
 
 def _is_missing(values):
-    """True for None, NaN and empty text: these are never learned as categories."""
+    """True for None, NaN and empty or blank text: these are never learned as categories.
+
+    Vectorised for every dtype. In an object array, None is found with ``np.equal``,
+    NaN as the only value not equal to itself, and blank text from the string form.
+
+    Parameters
+    ----------
+    values : ndarray of shape (n_samples,)
+
+    Returns
+    -------
+    ndarray of bool, shape (n_samples,)
+    """
     if values.dtype.kind == "f":
         return np.isnan(values)
     if values.dtype.kind in "US":
         return np.char.strip(values) == ""
-    return np.array([v is None or v != v or (isinstance(v, str) and not v.strip()) for v in values.tolist()],
-                    dtype=bool)
+    return np.equal(values, None) | (values != values) | (np.char.strip(values.astype(str)) == "")
+
+
+def _new_categories(values, known):
+    """Categories of one column that are not in ``known`` yet, in order of first appearance.
+
+    ``np.unique(..., return_index=True)`` gives each value with the position of its first
+    appearance; sorting by that position restores arrival order. Missing values are skipped.
+    A column that mixes text and numbers is rejected, as in the 2.1 encoder.
+
+    Parameters
+    ----------
+    values : ndarray of shape (n_samples,)
+    known : ndarray of shape (n_known,)
+
+    Returns
+    -------
+    ndarray of shape (n_new,)
+    """
+    present = values[~_is_missing(values)]
+    try:
+        unique, first = np.unique(present, return_index=True)
+    except TypeError:
+        raise TypeError("OneHotEncoder: a column mixes incomparable types (e.g. text and numbers); "
+                        "convert it to one type first.") from None
+    in_order = unique[np.argsort(first)]
+    return in_order[~np.isin(in_order, known)]
 
 
 class OneHotEncoder(_StreamingMixin, base.OneHotEncoder):
@@ -193,7 +287,18 @@ class OneHotEncoder(_StreamingMixin, base.OneHotEncoder):
         self.max_categories = max_categories
 
     def partial_fit(self, X, y=None):
-        """Learn the new categories of one chunk."""
+        """Learn the new categories of one chunk.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_columns)
+            Text and/or numbers. Missing values (None, NaN, "") are not learned.
+        y : ignored
+
+        Returns
+        -------
+        self
+        """
         if self.handle_unknown not in base._HANDLE_UNKNOWN:
             raise ValueError(f"handle_unknown must be one of {base._HANDLE_UNKNOWN}, got {self.handle_unknown!r}")
         X = base._check_2d(X, "OneHotEncoder")
@@ -207,19 +312,27 @@ class OneHotEncoder(_StreamingMixin, base.OneHotEncoder):
             base._check_n_features(self, encoded, reset=True)  # n_features_in_ = number of encoded columns
             self.categories_ = [encoded[:0, j] for j in range(encoded.shape[1])]  # empty, with the right dtype
         self._check_width(X)
-        for j, column in enumerate(self._encoded):
-            values = X[:, column]
+        for j, column in enumerate(self._encoded):  # a loop over the encoded columns only, never over samples
             known = self.categories_[j]
-            new = [v for v in dict.fromkeys(values[~_is_missing(values)].tolist()) if not np.any(known == v)]
+            new = _new_categories(X[:, column], known)
             if self.max_categories is not None:
                 new = new[:max(self.max_categories - len(known), 0)]
-            if new:  # added at the end, in order of appearance
-                new = np.array(new, dtype=object if known.dtype == object else None)
-                self.categories_[j] = np.concatenate([known, new])
+            if len(new):  # added at the end, so older categories keep their columns
+                self.categories_[j] = np.concatenate([known, new])  # widens text dtypes, e.g. <U4 -> <U5
         return self
 
     def transform(self, X):
-        """Encode the chosen columns with the 2.1 transform; other columns come first, as floats."""
+        """Encode the chosen columns with the 2.1 transform; other columns come first, as floats.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_columns)
+
+        Returns
+        -------
+        ndarray of shape (n_samples, n_passthrough + total encoded columns)
+            With ``max_categories=k``, each encoded column takes exactly k output columns.
+        """
         base._check_fitted(self, "categories_")
         X = base._check_2d(X, "OneHotEncoder")
         self._check_width(X)

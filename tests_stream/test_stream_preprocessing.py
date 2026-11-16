@@ -151,3 +151,34 @@ def test_feature_names_of_a_growing_encoder():
     assert encoder.get_feature_names_out().tolist() == ["x0", "x1_a", "x1_b"]  # default names, no unused slots
     encoder.partial_fit(np.array([[3.0, "c"]], dtype=object))
     assert encoder.get_feature_names_out(["price", "size"]).tolist() == ["price", "size_a", "size_b", "size_c"]
+
+
+def test_vectorised_category_search_matches_a_loop_in_order_of_arrival():
+    """The encoder finds new categories with np.unique; check it against the obvious per-sample loop."""
+    rng = np.random.default_rng(7)
+    pool = np.array(["red", "green", "blue", "teal", "", "  ", None, np.nan], dtype=object)
+    X = pool[rng.integers(0, len(pool), size=(400, 1))]
+    expected = []
+    for value in X[:, 0]:  # reference: walk the stream one sample at a time
+        missing = value is None or value != value or (isinstance(value, str) and not value.strip())
+        if not missing and value not in expected:
+            expected.append(value)
+    encoder = OneHotEncoder()
+    for chunk in np.array_split(X, 9):
+        encoder.partial_fit(chunk)
+    assert encoder.categories_[0].tolist() == expected
+
+
+def test_text_categories_longer_than_the_first_chunk_are_not_cut():
+    encoder = OneHotEncoder().partial_fit(np.array([["red"], ["blue"]]))  # fixed-width text, <U4
+    encoder.partial_fit(np.array([["turquoise"]]))
+    assert encoder.categories_[0].tolist() == ["red", "blue", "turquoise"]
+    np.testing.assert_array_equal(encoder.transform(np.array([["turquoise"]])), [[0, 0, 1]])
+
+
+def test_a_column_mixing_text_and_numbers_is_rejected_like_in_2_1():
+    mixed = np.array([["a"], [1]], dtype=object)
+    with pytest.raises(TypeError, match="incomparable"):
+        OneHotEncoder().partial_fit(mixed)
+    with pytest.raises(TypeError, match="incomparable"):
+        base21.OneHotEncoder().fit(mixed)  # the 2.1 encoder behaves the same way

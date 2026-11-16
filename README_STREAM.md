@@ -11,6 +11,16 @@
 
 > This file is the README for Assignment 2.2. The repository's `README.md` belongs to Assignment 2.1 and is left as it was.
 
+**Where each required item is.** Every 2.2 folder ends in `_stream`, so it cannot clash with the 2.1 folders of the same name:
+
+| The instructions ask for | In this repository |
+|---|---|
+| `numcompute_stream/` package with all modules | `numcompute_stream/` |
+| `tests/` folder (at least 30 unit tests) | `tests_stream/` (163 tests) |
+| `demo/stream_demo.ipynb` | `demo_stream/stream_demo.ipynb` |
+| `benchmark/` (loop vs vectorised) | `benchmark_stream/` (loop vs vectorised, and buffer sizes) |
+| `README.md` with usage instructions | `README_STREAM.md` (this file) |
+
 ## What Assignment 2.2 adds to the repository
 
 ```text
@@ -24,7 +34,7 @@ numcompute_stream/                   the package (spec modules + io.py for the d
 ├── _checks.py                       check_int_at_least: one rule for every integer setting
 ├── stream.py                        StreamTrainer
 └── visualise.py                     plot_metric_over_time, compare_models, plot_predictions_vs_ground_truth
-tests_stream/test_stream_*.py        9 test files, 160 tests
+tests_stream/test_stream_*.py        9 test files, 163 tests
 demo_stream/stream_demo.ipynb        the demo (already run); saved plots in demo_stream/figures/
 benchmark_stream/stream_loop_vs_vectorised.py   benchmark (a): loops vs vectorised code
 benchmark_stream/stream_buffer_size.py          benchmark (b): accuracy and retraining time vs buffer_size
@@ -110,6 +120,7 @@ vis.plot_metric_over_time(trainer.get("rolling_accuracy"), title="Accuracy", yla
   - `Imputer`: running means (`"mean"`) or a constant. The 2.1 strategies `"median"` and `"most_frequent"` work with `fit` only.
   - `OneHotEncoder`:
     - adds categories in order of arrival, so older categories keep their columns, and the 2.1 `transform` does the encoding;
+    - finds new categories with one `np.unique` per column (no Python loop over samples); a column that mixes text and numbers is rejected, as in 2.1;
     - `handle_unknown` defaults to `"ignore"` for streams, and missing values encode as all zeros;
     - `columns` picks which columns to encode, and `max_categories` keeps the output width fixed.
 - **`stats.py`**:
@@ -155,7 +166,7 @@ Every piece below is imported from the 2.1 package `numcompute`; no 2.1 file was
 | `stream.py`, `visualise.py` | `NotFittedError`; `confusion_matrix` |
 | `benchmark_stream/stream_loop_vs_vectorised.py` | `compare`, `format_results_table`; the 2.1 `StreamingStats` as a loop baseline |
 
-**No duplicated code.** An automatic check compared all 98 functions of `numcompute_stream` with the 118 functions of `numcompute`:
+**No duplicated code.** An automatic check compared all 99 functions of `numcompute_stream` with the 118 functions of `numcompute`:
 - No 2.2 function is identical or near-identical to a 2.1 function, and none duplicates another 2.2 function.
 - The one rule that was repeated in 8 places (a setting must be an integer >= 1) now lives in `_checks.py`, with one error message form everywhere.
 - There is no hand-written safe division, integer check, NaN check, CSV parsing or confusion counting; these all come from 2.1.
@@ -211,10 +222,10 @@ Stream: Dataset/Housing.csv, 544 houses, label `airconditioning`, chunks of 25 r
 
 ## Tests
 
-- **Counts**: 160 tests in `tests_stream/` cover **100% of the lines and 100% of the branches** of `numcompute_stream`. Together with the 627 Assignment 2.1 tests, all 787 pass, and the 2.1 coverage gate (100% of `numcompute`) still passes.
+- **Counts**: 163 tests in `tests_stream/` cover **100% of the lines and 100% of the branches** of `numcompute_stream`. Together with the 627 Assignment 2.1 tests, all 790 pass, and the 2.1 coverage gate (100% of `numcompute`) still passes.
 - **What they check**:
   - streaming results against the 2.1 batch results: every metric and every `average`, the scalers, imputer and encoder, and the running mean and variance against the 2.1 `StreamingStats`;
-  - the vectorised split search and prediction against simple loops, and the tree against the course's own tree code;
+  - the vectorised split search, prediction and category search against simple loops, and the tree against the course's own tree code;
   - buffered retraining: the buffer fills, retrains at `buffer_size`, is cleared, and `predict` uses the latest tree in between;
   - an end-to-end run of the demo's pipeline on `Housing.csv` (text columns, missing values, retraining every 100 samples);
   - **robustness** (`test_stream_robustness.py`):
@@ -241,8 +252,10 @@ Each problem was found by a test or a measurement, diagnosed, fixed, and then pi
 | 4 | `ConfusionMatrix` changed its labels before rejecting NaN input | The validation came after the state update | Validate first | `test_a_rejected_update_leaves_the_confusion_matrix_unchanged` |
 | 5 | Precision, recall and F1 repeated the 2.1 averaging logic | Found by comparing 2.2 functions with 2.1 functions | Reuse the 2.1 helper (`binary`, `macro`, `micro` now match 2.1) | `test_streaming_scores_equal_the_2_1_batch_scores` |
 | 6 | A threshold between values near +1.7e308 and -1.7e308 raised an overflow warning | `high - low` overflows, and only a later guard hid the result | Compute `low / 2 + high / 2`, and keep the guard for neighbouring floats | `test_extreme_values_cannot_overflow_the_threshold` |
-| 7 | All-equal features still paid for the cumulative class counts | Measured: 33 ms for 200,000 x 5 constant values | Skip a constant feature right after its sort (10 ms) | `test_all_equal_features_are_cheap_and_give_one_leaf` (checks the result and a generous time bound) |
+| 7 | All-equal features still paid for the cumulative class counts | Measured: 171 ms for 200,000 x 5 constant values | Skip a constant feature right after its sort (6 ms; timings vary by machine) | `test_all_equal_features_are_cheap_and_give_one_leaf` (checks the result and a generous time bound) |
 | 8 | The integer check for settings was repeated in 8 places with different messages | The duplicate audit flagged two near-identical constructors | One shared `check_int_at_least` | `test_integer_settings_are_checked_the_same_way_everywhere` |
+| 9 | `OneHotEncoder.partial_fit` looped over samples in Python (two loops), against the specification's vectorisation rule, and accepted a column mixing text and numbers that 2.1 rejects | A loop audit of the package: every `for` and comprehension, and what it iterates over | One `np.unique(..., return_index=True)` per column keeps arrival order; missing values are found with vectorised tests | `test_vectorised_category_search_matches_a_loop_in_order_of_arrival`, `test_a_column_mixing_text_and_numbers_is_rejected_like_in_2_1` |
+| 10 | The first vectorised version cut "green" to "gree" | An existing test failed: the first chunk fixed the text width (`<U4`), and casting new categories to it cut them short | Let `np.concatenate` widen the type | `test_text_categories_longer_than_the_first_chunk_are_not_cut` (fails with the bug put back) |
 
 ## Design decisions and known limits
 
