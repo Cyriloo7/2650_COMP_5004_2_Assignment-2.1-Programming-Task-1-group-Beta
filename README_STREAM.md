@@ -54,7 +54,7 @@ python -m pip install -e ".[dev]"                # numpy, plus matplotlib, pytes
 python -m pip install notebook                   # to open the demo
 python -m pytest                                 # 2.1 and 2.2 tests together (812)
 python -m pytest tests_stream                    # only the 2.2 tests (185)
-python -m pytest tests_stream --cov=numcompute_stream --cov-branch   # with line and branch coverage
+python -m pytest tests_stream --cov=numcompute_stream --cov-report=term-missing   # with line and branch coverage
 python -m benchmark_stream.stream_loop_vs_vectorised   # benchmark (a), a few seconds
 python -m benchmark_stream.stream_buffer_size          # benchmark (b), a few seconds
 python -m notebook demo_stream/stream_demo.ipynb # the demo
